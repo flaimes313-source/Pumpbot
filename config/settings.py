@@ -3,18 +3,22 @@ from dotenv import load_dotenv
 import sys
 from pathlib import Path
 
+# Добавляем корневую папку в путь
 sys.path.append(str(Path(__file__).parent.parent))
-load_dotenv()
+
+# Указываем путь к .env файлу
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path)
 
 class Config:
-    # Telegram (ОБЯЗАТЕЛЬНО)
+    # Telegram (ОБЯЗАТЕЛЬНО!)
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
     
     # Настройки сканирования
     MAX_SYMBOLS = int(os.getenv('MAX_SYMBOLS', 50))
     TOP_SIGNALS = int(os.getenv('TOP_SIGNALS', 5))
-    MIN_VOLUME_USD = float(os.getenv('MIN_VOLUME_USD', 500_000))  # Снизили до 500k
+    MIN_VOLUME_USD = float(os.getenv('MIN_VOLUME_USD', 500_000))
     
     # Временные настройки
     TIMEFRAME = os.getenv('TIMEFRAME', '5')
