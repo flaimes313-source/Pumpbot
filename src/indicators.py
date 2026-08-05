@@ -72,7 +72,6 @@ class Indicators:
             if current_oi <= 0:
                 return 0, 0.0
             
-            # Периоды (в свечах по 5 минут)
             periods = {
                 '5min': 1,
                 '15min': 3,
@@ -106,36 +105,41 @@ class Indicators:
     def calculate_cvd(df):
         """
         Cumulative Volume Delta (CVD)
-        Дельта между покупками и продажами
+        Используем агрессивную сторону (aggressor side)
         """
         if df.empty or len(df) < 2:
             return 0, 0.0
         
         try:
-            # Приводим все к числовому типу
             close = pd.to_numeric(df['close'], errors='coerce')
             open_price = pd.to_numeric(df['open'], errors='coerce')
             volume = pd.to_numeric(df['volume'], errors='coerce')
             
-            # Удаляем NaN
-            valid_mask = ~(close.isna() | open_price.isna() | volume.isna())
-            if not valid_mask.any():
-                return 0, 0.0
+            # Если есть данные по taker buy volume - используем их
+            if 'taker_buy_volume' in df.columns:
+                taker_buy = pd.to_numeric(df['taker_buy_volume'], errors='coerce')
+                taker_sell = volume - taker_buy
+                delta = taker_buy - taker_sell
+            else:
+                # Эмуляция через свечи
+                delta = []
+                for i in range(len(close)):
+                    if not pd.isna(close.iloc[i]) and not pd.isna(open_price.iloc[i]):
+                        if close.iloc[i] > open_price.iloc[i]:
+                            delta.append(volume.iloc[i] * 0.7)  # 70% покупки
+                        elif close.iloc[i] < open_price.iloc[i]:
+                            delta.append(-volume.iloc[i] * 0.7)  # 70% продажи
+                        else:
+                            delta.append(0)
+                    else:
+                        delta.append(0)
+                
+                delta = np.array(delta)
             
-            close = close[valid_mask]
-            open_price = open_price[valid_mask]
-            volume = volume[valid_mask]
+            # Убираем NaN
+            delta = delta[~np.isnan(delta)]
             
-            delta = []
-            for i in range(len(close)):
-                if close.iloc[i] > open_price.iloc[i]:
-                    delta.append(volume.iloc[i])
-                elif close.iloc[i] < open_price.iloc[i]:
-                    delta.append(-volume.iloc[i])
-                else:
-                    delta.append(0)
-            
-            if not delta:
+            if len(delta) == 0:
                 return 0, 0.0
             
             cvd = np.cumsum(delta)
@@ -153,7 +157,7 @@ class Indicators:
     @staticmethod
     def calculate_bid_ask_imbalance(orderbook):
         """
-        Дисбаланс Bid/Ask в стакане
+        Дисбаланс Bid/Ask в стакане (Top 25)
         """
         bids = orderbook.get('bids', [])
         asks = orderbook.get('asks', [])
@@ -162,14 +166,15 @@ class Indicators:
             return 0, 0.0
         
         try:
-            # Суммарный объём на покупку и продажу
-            bid_volume = sum([float(b[1]) for b in bids[:10] if len(b) > 1])
-            ask_volume = sum([float(a[1]) for a in asks[:10] if len(a) > 1])
+            # Используем Top 25
+            bid_volume = sum([float(b[1]) for b in bids[:25] if len(b) > 1])
+            ask_volume = sum([float(a[1]) for a in asks[:25] if len(a) > 1])
             
             total_volume = bid_volume + ask_volume
             if total_volume > 0:
                 imbalance = (bid_volume - ask_volume) / total_volume * 100
-                score = min(10, max(0, abs(imbalance) / 5))
+                # Чем больше дисбаланс в пользу бидов - тем лучше для пампов
+                score = min(10, max(0, imbalance / 5))
                 return score, imbalance
         except Exception as e:
             logger.error(f"Ошибка Bid/Ask: {e}")
@@ -179,7 +184,8 @@ class Indicators:
     @staticmethod
     def calculate_price_acceleration(df):
         """
-        Ускорение цены (скорость изменения скорости)
+        Ускорение цены с учётом направления
+        Для пампов важно ускорение ВВЕРХ
         """
         if df.empty or len(df) < 5:
             return 0, 0.0
@@ -193,18 +199,24 @@ class Indicators:
             price_3m = close.iloc[-3] - close.iloc[-4]
             price_2m = close.iloc[-4] - close.iloc[-5]
             
-            # Средняя скорость
-            avg_speed = (abs(price_2m) + abs(price_3m) + abs(price_4m)) / 3
-            current_speed = abs(price_5m)
+            # Средняя скорость (с учётом знака)
+            avg_speed = (price_2m + price_3m + price_4m) / 3
             
+            # Если средняя скорость положительная - ускорение вверх
             if avg_speed > 0:
-                acceleration = current_speed / avg_speed
-                if acceleration > 2.0:
-                    return 10, acceleration
-                elif acceleration > 1.5:
-                    return 7, acceleration
-                elif acceleration > 1.2:
-                    return 5, acceleration
+                acceleration = price_5m / avg_speed
+                # Только если текущее движение тоже вверх
+                if price_5m > 0 and acceleration > 1.2:
+                    if acceleration > 2.0:
+                        return 10, acceleration
+                    elif acceleration > 1.5:
+                        return 7, acceleration
+                    elif acceleration > 1.2:
+                        return 5, acceleration
+            # Если цена падает - даём 0 баллов
+            elif price_5m < 0:
+                return 0, -abs(price_5m / avg_speed) if avg_speed != 0 else 0
+                
         except Exception as e:
             logger.error(f"Ошибка price acceleration: {e}")
         
@@ -219,12 +231,19 @@ class Indicators:
             return 0, 0.0
         
         try:
-            volume = pd.to_numeric(df['volume'], errors='coerce')
-            avg_volume = volume.iloc[-6:-1].mean()
-            last_volume = volume.iloc[-1]
+            # Если есть реальные данные по количеству сделок
+            if 'trade_count' in df.columns:
+                trade_count = pd.to_numeric(df['trade_count'], errors='coerce')
+                avg_trades = trade_count.iloc[-6:-1].mean()
+                last_trades = trade_count.iloc[-1]
+            else:
+                # Эмуляция через объём
+                volume = pd.to_numeric(df['volume'], errors='coerce')
+                avg_trades = volume.iloc[-6:-1].mean()
+                last_trades = volume.iloc[-1]
             
-            if avg_volume > 0 and last_volume > 0:
-                growth = last_volume / avg_volume
+            if avg_trades > 0 and last_trades > 0:
+                growth = last_trades / avg_trades
                 if growth > 2.0:
                     return 5, growth
                 elif growth > 1.5:
@@ -238,6 +257,7 @@ class Indicators:
     def check_funding_change(funding_df):
         """
         Реальное изменение funding rate за последние периоды
+        Учитываем знак - для пампов важно положительное funding
         """
         if funding_df.empty or len(funding_df) < 3:
             return 0, 0.0
@@ -252,30 +272,55 @@ class Indicators:
             past_3 = funding.iloc[-3] if len(funding) >= 3 else current
             past_6 = funding.iloc[-6] if len(funding) >= 6 else past_3
             
-            change_3 = abs(current - past_3) * 100
-            change_6 = abs(current - past_6) * 100
+            change_3 = (current - past_3) * 100  # Со знаком!
+            change_6 = (current - past_6) * 100  # Со знаком!
             
             score = 0
-            if change_3 > 0.01:
+            # Funding становится положительным (бычий сигнал)
+            if current > 0 and change_3 > 0.005:
                 score += 5
-            if change_6 > 0.02:
+            if current > 0 and change_6 > 0.01:
                 score += 5
+            # Если funding отрицательный - штраф
+            if current < 0:
+                score -= 3
             
-            return min(score, 10), max(change_3, change_6)
+            return max(0, min(score, 10)), max(change_3, change_6)
         except Exception as e:
             logger.error(f"Ошибка funding change: {e}")
         
         return 0, 0.0
     
     @staticmethod
-    def check_volume_oi_synergy(volume_ratio, oi_change):
+    def check_volume_oi_synergy(df, oi_df, volume_ratio, oi_change):
         """
-        Синергия объёма и OI (одновременный рост)
+        Синергия объёма и OI на одной свече
+        Проверяем что они выросли одновременно
         """
-        if volume_ratio > 1.5 and oi_change > 3:
-            return 10, True
-        elif volume_ratio > 1.2 and oi_change > 2:
-            return 5, True
+        if df.empty or oi_df.empty:
+            return 0, False
+        
+        try:
+            # Проверяем последнюю свечу
+            last_volume = pd.to_numeric(df['volume'], errors='coerce').iloc[-1]
+            prev_volume = pd.to_numeric(df['volume'], errors='coerce').iloc[-2]
+            
+            last_oi = pd.to_numeric(oi_df['openInterest'], errors='coerce').iloc[-1]
+            prev_oi = pd.to_numeric(oi_df['openInterest'], errors='coerce').iloc[-2]
+            
+            # Считаем изменение на последней свече
+            volume_change = (last_volume - prev_volume) / prev_volume * 100 if prev_volume > 0 else 0
+            oi_change_single = (last_oi - prev_oi) / prev_oi * 100 if prev_oi > 0 else 0
+            
+            # Проверяем что и объём и OI выросли на одной свече
+            if volume_change > 20 and oi_change_single > 2:
+                return 10, True
+            elif volume_change > 10 and oi_change_single > 1:
+                return 5, True
+                
+        except Exception as e:
+            logger.error(f"Ошибка synergy: {e}")
+        
         return 0, False
     
     @staticmethod
@@ -300,13 +345,13 @@ class Indicators:
             elif total > 200_000:
                 score += 4
             
-            # Преобладание шортов или лонгов
+            # Преобладание шортов = бычий сигнал
             if short > long * 1.5:
                 score += 5  # Бычий сигнал
             elif long > short * 1.5:
-                score += 5  # Медвежий сигнал
+                score -= 3  # Медвежий сигнал (штраф)
             
-            return min(score, 15), (short - long) / (short + long) if (short + long) > 0 else 0
+            return max(0, min(score, 15)), (short - long) / (short + long) if (short + long) > 0 else 0
         except Exception as e:
             logger.error(f"Ошибка liquidations: {e}")
         
@@ -343,3 +388,46 @@ class Indicators:
             logger.error(f"Ошибка resistance levels: {e}")
         
         return current_price * 1.1, 10.0
+    
+    @staticmethod
+    def check_pump_conditions(df, oi_df, volume_ratio, oi_change):
+        """
+        Комплексная проверка условий для пампов
+        """
+        if df.empty:
+            return 0, False
+        
+        try:
+            close = pd.to_numeric(df['close'], errors='coerce')
+            volume = pd.to_numeric(df['volume'], errors='coerce')
+            
+            # Проверяем последнюю свечу
+            price_change = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100 if close.iloc[-2] > 0 else 0
+            
+            # Условия для настоящего пампа
+            conditions = {
+                'price_up': price_change > 1.0,
+                'volume_up': volume_ratio > 1.5,
+                'oi_up': oi_change > 3,
+                'cvd_up': True,  # Будет проверено отдельно
+            }
+            
+            # Считаем сколько условий выполнено
+            score = 0
+            if conditions['price_up']:
+                score += 5
+            if conditions['volume_up']:
+                score += 5
+            if conditions['oi_up']:
+                score += 5
+            
+            # Бонус если все три выполнены
+            if score >= 10:
+                score += 5  # Бонус за синергию
+            
+            return score, conditions
+            
+        except Exception as e:
+            logger.error(f"Ошибка pump conditions: {e}")
+        
+        return 0, False

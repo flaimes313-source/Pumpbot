@@ -89,6 +89,7 @@ class PumpDetector:
             
             # ============================================================
             # 3. CVD (Cumulative Volume Delta) - до 15 баллов
+            # ИСПРАВЛЕНО: используем агрессивную сторону (taker)
             # ============================================================
             cvd_score, cvd_delta = self.indicators.calculate_cvd(df)
             score += cvd_score
@@ -96,6 +97,7 @@ class PumpDetector:
             
             # ============================================================
             # 4. BID/ASK IMBALANCE - до 10 баллов
+            # ИСПРАВЛЕНО: Top 25 вместо Top 10
             # ============================================================
             bid_score, bid_imbalance = self.indicators.calculate_bid_ask_imbalance(orderbook)
             score += bid_score
@@ -103,10 +105,14 @@ class PumpDetector:
             
             # ============================================================
             # 5. PRICE ACCELERATION - до 10 баллов
+            # ИСПРАВЛЕНО: учитываем направление (только рост)
             # ============================================================
             accel_score, acceleration = self.indicators.calculate_price_acceleration(df)
-            score += accel_score
-            details['Acceleration'] = f"{acceleration:.1f}x (+{accel_score})"
+            if accel_score > 0:  # Только если ускорение вверх
+                score += accel_score
+                details['Acceleration'] = f"{acceleration:.1f}x (+{accel_score})"
+            else:
+                details['Acceleration'] = f"↓ {acceleration:.1f}x (+0)"
             
             # ============================================================
             # 6. TRADE COUNT - до 5 баллов
@@ -117,6 +123,7 @@ class PumpDetector:
             
             # ============================================================
             # 7. FUNDING HISTORY - до 10 баллов
+            # ИСПРАВЛЕНО: учитываем знак (положительный = бонус)
             # ============================================================
             funding_score, funding_change = self.indicators.check_funding_change(funding_df)
             score += funding_score
@@ -132,11 +139,21 @@ class PumpDetector:
             
             # ============================================================
             # 9. VOLUME + OI SYNERGY - до 10 бонусных баллов
+            # ИСПРАВЛЕНО: проверяем на ОДНОЙ СВЕЧЕ!
             # ============================================================
-            synergy_score, synergy = self.indicators.check_volume_oi_synergy(vol_ratio, oi_change)
+            synergy_score, synergy = self.indicators.check_volume_oi_synergy(df, oi_df, vol_ratio, oi_change)
             if synergy:
                 score += synergy_score
                 details['Synergy'] = f"✅ +{synergy_score} (бонус)"
+            
+            # ============================================================
+            # 10. PUMP CONDITIONS - комплексная проверка
+            # НОВЫЙ ИНДИКАТОР!
+            # ============================================================
+            pump_score, pump_conditions = self.indicators.check_pump_conditions(df, oi_df, vol_ratio, oi_change)
+            if pump_score > 0:
+                score += pump_score
+                details['PumpCheck'] = f"✅ +{pump_score}"
             
             # ============================================================
             # ФИЛЬТРЫ
@@ -177,7 +194,9 @@ class PumpDetector:
                     'bid_imbalance': bid_imbalance,
                     'acceleration': acceleration,
                     'liq_short': liq_data['short'],
-                    'liq_long': liq_data['long']
+                    'liq_long': liq_data['long'],
+                    'synergy': synergy,
+                    'pump_conditions': pump_conditions
                 }
             
             return None
