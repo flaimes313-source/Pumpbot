@@ -23,13 +23,14 @@ class PumpDetector:
         
         symbols = self.client.load_all_symbols()
         if not symbols:
-            logger.error("Не удалось загрузить символы")
+            logger.error("❌ Не удалось загрузить символы")
             return []
         
         symbols_to_check = symbols[:config.MAX_SYMBOLS]
         logger.info(f"📊 Проверяем {len(symbols_to_check)} монет из {len(symbols)}")
         
         results = []
+        failed_count = 0
         
         for i, symbol in enumerate(symbols_to_check, 1):
             try:
@@ -41,19 +42,22 @@ class PumpDetector:
                     if i % 10 == 0:
                         logger.info(f"⏳ Проверено {i}/{len(symbols_to_check)} монет...")
             except Exception as e:
-                logger.error(f"Ошибка при проверке {symbol}: {e}")
+                failed_count += 1
+                logger.error(f"❌ Ошибка при проверке {symbol}: {e}")
         
         results.sort(key=lambda x: x['score'], reverse=True)
-        logger.info(f"🏆 Найдено {len(results)} сигналов!")
+        logger.info(f"🏆 Найдено {len(results)} сигналов! (Ошибок: {failed_count})")
         return results[:config.TOP_SIGNALS]
     
     def check_pump(self, symbol):
         """Проверка одной монеты"""
         try:
+            # Получаем свечи
             df = self.client.get_klines(symbol, str(config.TIMEFRAME), limit=100)
             if df.empty:
                 return None
             
+            # Проверяем объём
             volume_usd = self.client.get_24h_volume_usd(symbol)
             if volume_usd < config.MIN_VOLUME_USD:
                 return None
@@ -62,12 +66,12 @@ class PumpDetector:
             score = 0
             details = {}
             
-            # 1. Volume (всплеск объёма) - 30 баллов
+            # 1. Volume
             vol_score, ratio = self.indicators.check_volume_spike(df)
             score += vol_score
             details['Volume'] = f"{ratio:.1f}x (+{vol_score})"
             
-            # 2. Price (рост цены за 5 минут) - 15 баллов
+            # 2. Price
             if len(df) >= 2:
                 price_5m_ago = df['close'].iloc[-2]
                 price_change = ((current_price - price_5m_ago) / price_5m_ago) * 100
@@ -81,7 +85,7 @@ class PumpDetector:
                 details['Price'] = "N/A"
                 price_change = 0
             
-            # 3. OI (рост Open Interest) - 20 баллов
+            # 3. OI
             oi_now, oi_change = self._get_oi_change(symbol)
             if oi_change > config.OI_CHANGE_15M:
                 score += 20
@@ -89,7 +93,7 @@ class PumpDetector:
             else:
                 details['OI'] = f"+{oi_change:.1f}% (+0)"
             
-            # 4. Funding (изменение ставки) - 15 баллов
+            # 4. Funding
             funding_now = self.client.get_funding_rate(symbol)
             funding_prev = funding_now - 0.005
             funding_spike = (funding_now - funding_prev) * 100
@@ -100,9 +104,7 @@ class PumpDetector:
             else:
                 details['Funding'] = f"{funding_now*100:.4f}% (+0)"
             
-            # ===== ФИЛЬТРЫ =====
-            
-            # 1. ATR (волатильность)
+            # Фильтры
             atr_24h = self.indicators.calculate_atr(df, period=96)
             atr_4h = self.indicators.calculate_atr(df, period=48)
             
@@ -111,7 +113,7 @@ class PumpDetector:
             if atr_4h > config.ATR_MAX_PERCENT_4H:
                 return None
             
-            # 2. Resistance (сопротивление)
+            # Resistance
             resistance, gap = self.indicators.find_resistance_levels(df, current_price)
             if gap < config.RESISTANCE_GAP_MIN:
                 return None
@@ -135,7 +137,7 @@ class PumpDetector:
             return None
             
         except Exception as e:
-            logger.error(f"Ошибка в check_pump для {symbol}: {e}")
+            logger.error(f"❌ Ошибка в check_pump для {symbol}: {e}")
             return None
     
     def _get_oi_change(self, symbol):
@@ -167,5 +169,5 @@ class PumpDetector:
             
             return current_oi, oi_change
         except Exception as e:
-            logger.error(f"Ошибка _get_oi_change для {symbol}: {e}")
+            logger.error(f"❌ Ошибка _get_oi_change для {symbol}: {e}")
             return 0, 0.0
