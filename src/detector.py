@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class PumpDetector:
-    """Детектор пампов - сканирует все монеты"""
+    """Детектор пампов с расширенными индикаторами"""
     
     def __init__(self):
         self.client = BybitClient()
@@ -17,47 +17,54 @@ class PumpDetector:
         self.results = []
     
     def scan_all_symbols(self):
-        """Сканирует все монеты и возвращает топ по рейтингу"""
+        """Сканирует все монеты"""
         logger.info("="*50)
-        logger.info("🚀 Начинаем сканирование всех монет...")
+        logger.info("🚀 Начинаем сканирование...")
         
         symbols = self.client.load_all_symbols()
         if not symbols:
-            logger.error("❌ Не удалось загрузить символы")
             return []
         
         symbols_to_check = symbols[:config.MAX_SYMBOLS]
-        logger.info(f"📊 Проверяем {len(symbols_to_check)} монет из {len(symbols)}")
+        logger.info(f"📊 Проверяем {len(symbols_to_check)} монет")
         
         results = []
-        failed_count = 0
-        
         for i, symbol in enumerate(symbols_to_check, 1):
             try:
                 result = self.check_pump(symbol)
-                if result and result['score'] >= config.SCORE_THRESHOLD:
+                if result:
                     results.append(result)
-                    logger.info(f"✅ [{i}/{len(symbols_to_check)}] {symbol}: {result['score']} баллов")
-                else:
-                    if i % 10 == 0:
-                        logger.info(f"⏳ Проверено {i}/{len(symbols_to_check)} монет...")
+                    logger.info(f"✅ [{i}] {symbol}: {result['score']} баллов")
+                elif i % 10 == 0:
+                    logger.info(f"⏳ Проверено {i}/{len(symbols_to_check)}")
             except Exception as e:
-                failed_count += 1
-                logger.error(f"❌ Ошибка при проверке {symbol}: {e}")
+                logger.error(f"❌ Ошибка {symbol}: {e}")
         
         results.sort(key=lambda x: x['score'], reverse=True)
-        logger.info(f"🏆 Найдено {len(results)} сигналов! (Ошибок: {failed_count})")
+        logger.info(f"🏆 Найдено {len(results)} сигналов!")
         return results[:config.TOP_SIGNALS]
     
     def check_pump(self, symbol):
         """Проверка одной монеты"""
         try:
-            # Получаем свечи
-            df = self.client.get_klines(symbol, str(config.TIMEFRAME), limit=100)
+            # 1. Свечи
+            df = self.client.get_klines(symbol, '5', limit=200)
             if df.empty:
                 return None
             
-            # Проверяем объём
+            # 2. OI история
+            oi_df = self.client.get_oi_history(symbol, limit=50)
+            
+            # 3. Funding история
+            funding_df = self.client.get_funding_history(symbol, limit=30)
+            
+            # 4. Стакан
+            orderbook = self.client.get_orderbook(symbol)
+            
+            # 5. Ликвидации
+            liq_data = self.client.get_liquidations(symbol)
+            
+            # 6. Проверка объёма
             volume_usd = self.client.get_24h_volume_usd(symbol)
             if volume_usd < config.MIN_VOLUME_USD:
                 return None
@@ -66,45 +73,76 @@ class PumpDetector:
             score = 0
             details = {}
             
-            # 1. Volume
-            vol_score, ratio = self.indicators.check_volume_spike(df)
+            # ============================================================
+            # 1. VOLUME SPIKE (до 30 баллов)
+            # ============================================================
+            vol_score, vol_ratio = self.indicators.check_volume_spike(df)
             score += vol_score
-            details['Volume'] = f"{ratio:.1f}x (+{vol_score})"
+            details['Volume'] = f"{vol_ratio:.1f}x (+{vol_score})"
             
-            # 2. Price
-            if len(df) >= 2:
-                price_5m_ago = df['close'].iloc[-2]
-                price_change = ((current_price - price_5m_ago) / price_5m_ago) * 100
-                
-                if price_change > config.PRICE_CHANGE_5M:
-                    score += 15
-                    details['Price'] = f"+{price_change:.2f}% (+15)"
-                else:
-                    details['Price'] = f"+{price_change:.2f}% (+0)"
-            else:
-                details['Price'] = "N/A"
-                price_change = 0
+            # ============================================================
+            # 2. OI GROWTH (5/15/30 мин) - до 25 баллов
+            # ============================================================
+            oi_score, oi_change = self.indicators.check_oi_growth(oi_df)
+            score += oi_score
+            details['OI'] = f"+{oi_change:.1f}% (+{oi_score})"
             
-            # 3. OI
-            oi_now, oi_change = self._get_oi_change(symbol)
-            if oi_change > config.OI_CHANGE_15M:
-                score += 20
-                details['OI'] = f"+{oi_change:.1f}% (+20)"
-            else:
-                details['OI'] = f"+{oi_change:.1f}% (+0)"
+            # ============================================================
+            # 3. CVD (Cumulative Volume Delta) - до 15 баллов
+            # ============================================================
+            cvd_score, cvd_delta = self.indicators.calculate_cvd(df)
+            score += cvd_score
+            details['CVD'] = f"{cvd_delta:.0f} (+{cvd_score})"
             
-            # 4. Funding
-            funding_now = self.client.get_funding_rate(symbol)
-            funding_prev = funding_now - 0.005
-            funding_spike = (funding_now - funding_prev) * 100
+            # ============================================================
+            # 4. BID/ASK IMBALANCE - до 10 баллов
+            # ============================================================
+            bid_score, bid_imbalance = self.indicators.calculate_bid_ask_imbalance(orderbook)
+            score += bid_score
+            details['Bid/Ask'] = f"{bid_imbalance:.1f}% (+{bid_score})"
             
-            if funding_spike > config.FUNDING_SPIKE:
-                score += 15
-                details['Funding'] = f"{funding_now*100:.4f}% (+15)"
-            else:
-                details['Funding'] = f"{funding_now*100:.4f}% (+0)"
+            # ============================================================
+            # 5. PRICE ACCELERATION - до 10 баллов
+            # ============================================================
+            accel_score, acceleration = self.indicators.calculate_price_acceleration(df)
+            score += accel_score
+            details['Acceleration'] = f"{acceleration:.1f}x (+{accel_score})"
             
-            # Фильтры
+            # ============================================================
+            # 6. TRADE COUNT - до 5 баллов
+            # ============================================================
+            trade_score, trade_growth = self.indicators.check_trade_count_growth(df)
+            score += trade_score
+            details['TradeCount'] = f"{trade_growth:.1f}x (+{trade_score})"
+            
+            # ============================================================
+            # 7. FUNDING HISTORY - до 10 баллов
+            # ============================================================
+            funding_score, funding_change = self.indicators.check_funding_change(funding_df)
+            score += funding_score
+            current_funding = self.client.get_funding_rate(symbol)
+            details['Funding'] = f"{current_funding*100:.4f}% (+{funding_score})"
+            
+            # ============================================================
+            # 8. LIQUIDATIONS - до 15 баллов
+            # ============================================================
+            liq_score, liq_ratio = self.indicators.check_liquidations(liq_data)
+            score += liq_score
+            details['Liquidations'] = f"${liq_data['total']/1e6:.2f}M (+{liq_score})"
+            
+            # ============================================================
+            # 9. VOLUME + OI SYNERGY - до 10 бонусных баллов
+            # ============================================================
+            synergy_score, synergy = self.indicators.check_volume_oi_synergy(vol_ratio, oi_change)
+            if synergy:
+                score += synergy_score
+                details['Synergy'] = f"✅ +{synergy_score} (бонус)"
+            
+            # ============================================================
+            # ФИЛЬТРЫ
+            # ============================================================
+            
+            # ATR (волатильность)
             atr_24h = self.indicators.calculate_atr(df, period=96)
             atr_4h = self.indicators.calculate_atr(df, period=48)
             
@@ -113,61 +151,37 @@ class PumpDetector:
             if atr_4h > config.ATR_MAX_PERCENT_4H:
                 return None
             
-            # Resistance
+            # Сопротивление
             resistance, gap = self.indicators.find_resistance_levels(df, current_price)
             if gap < config.RESISTANCE_GAP_MIN:
                 return None
             
+            # ============================================================
+            # ИТОГ
+            # ============================================================
             if score >= config.SCORE_THRESHOLD:
                 return {
                     'symbol': symbol,
                     'score': score,
                     'price': current_price,
-                    'price_change': price_change,
-                    'volume_ratio': ratio,
+                    'price_change': ((df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2]) * 100,
+                    'volume_ratio': vol_ratio,
                     'oi_change': oi_change,
-                    'funding': funding_now,
+                    'funding': current_funding,
                     'details': details,
                     'atr_24h': atr_24h,
                     'atr_4h': atr_4h,
                     'resistance_gap': gap,
-                    'resistance': resistance
+                    'resistance': resistance,
+                    'cvd': cvd_delta,
+                    'bid_imbalance': bid_imbalance,
+                    'acceleration': acceleration,
+                    'liq_short': liq_data['short'],
+                    'liq_long': liq_data['long']
                 }
             
             return None
             
         except Exception as e:
-            logger.error(f"❌ Ошибка в check_pump для {symbol}: {e}")
+            logger.error(f"❌ Ошибка check_pump {symbol}: {e}")
             return None
-    
-    def _get_oi_change(self, symbol):
-        """Получение изменения OI за 15 минут"""
-        try:
-            if symbol not in self.oi_history:
-                self.oi_history[symbol] = deque(maxlen=10)
-            
-            current_oi = self.client.get_open_interest(symbol)
-            timestamp = datetime.now()
-            
-            self.oi_history[symbol].append({
-                'timestamp': timestamp,
-                'oi': current_oi
-            })
-            
-            fifteen_min_ago = timestamp - timedelta(minutes=15)
-            oi_15min_ago = None
-            
-            for record in reversed(self.oi_history[symbol]):
-                if record['timestamp'] <= fifteen_min_ago:
-                    oi_15min_ago = record['oi']
-                    break
-            
-            if oi_15min_ago and oi_15min_ago > 0:
-                oi_change = ((current_oi - oi_15min_ago) / oi_15min_ago) * 100
-            else:
-                oi_change = 0.0
-            
-            return current_oi, oi_change
-        except Exception as e:
-            logger.error(f"❌ Ошибка _get_oi_change для {symbol}: {e}")
-            return 0, 0.0

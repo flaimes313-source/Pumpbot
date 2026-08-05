@@ -24,26 +24,27 @@ class TelegramNotifier:
         self.detector = detector
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обработчик команды /start
-        Запускает сканирование и отправляет приветствие
-        """
+        """Команда /start - запускает сканирование"""
         user = update.effective_user
         user_name = user.first_name if user.first_name else "Пользователь"
         
         # Если сканирование уже запущено
         if self.is_scanning:
             await update.message.reply_text(
-                f"👋 <b>Привет, {user_name}!</b>\n\n"
-                f"✅ <b>Сканирование УЖЕ запущено!</b>\n"
+                f"👋 Привет, {user_name}!\n\n"
+                f"✅ Сканирование УЖЕ запущено!\n"
                 f"🔄 Бот работает в фоновом режиме.\n\n"
-                f"📊 Статус: Активен\n"
-                f"⏱️ Интервал: {config.CHECK_INTERVAL} сек\n"
-                f"🎯 Порог: {config.SCORE_THRESHOLD}/100\n\n"
+                f"📊 <b>Новые индикаторы:</b>\n"
+                f"• 📈 OI за 5/15/30 минут\n"
+                f"• 📉 CVD (дельта покупок/продаж)\n"
+                f"• 📊 Bid/Ask дисбаланс\n"
+                f"• ⚡ Ускорение цены\n"
+                f"• 🔥 Ликвидации\n"
+                f"• 🤝 Синергия Volume+OI\n\n"
                 f"📱 Команды:\n"
                 f"/start - Запустить/проверить статус\n"
-                f"/status - Статус сканирования\n"
                 f"/stop - Остановить сканирование\n"
+                f"/status - Статус\n"
                 f"/help - Помощь",
                 parse_mode='HTML'
             )
@@ -52,25 +53,20 @@ class TelegramNotifier:
         # Запускаем сканирование
         self.is_scanning = True
         await update.message.reply_text(
-            f"👋 <b>Привет, {user_name}!</b>\n\n"
-            f"🚀 <b>ЗАПУСКАЮ СКАНИРОВАНИЕ...</b>\n\n"
+            f"👋 Привет, {user_name}!\n\n"
+            f"🚀 ЗАПУСКАЮ СКАНИРОВАНИЕ...\n\n"
             f"📊 <b>Настройки:</b>\n"
-            f"• Максимум монет: {config.MAX_SYMBOLS}\n"
-            f"• Топ сигналов: {config.TOP_SIGNALS}\n"
-            f"• Порог срабатывания: {config.SCORE_THRESHOLD}/100\n"
-            f"• Интервал сканирования: {config.CHECK_INTERVAL} сек\n"
-            f"• Минимальный объём: ${config.MIN_VOLUME_USD:,.0f}\n\n"
-            f"🔍 <b>Что я проверяю:</b>\n"
-            f"• 📈 Всплеск объёма (+30 баллов)\n"
-            f"• 💰 Рост Open Interest (+20 баллов)\n"
-            f"• ⚡ Изменение Funding (+15 баллов)\n"
-            f"• 📊 Рост цены (+15 баллов)\n\n"
-            f"📱 <b>Команды:</b>\n"
-            f"/start - Запустить/проверить статус\n"
-            f"/status - Статус сканирования\n"
-            f"/stop - Остановить сканирование\n"
-            f"/help - Помощь\n\n"
-            f"✅ <b>Сканирование запущено!</b>",
+            f"• Интервал: {config.CHECK_INTERVAL} сек\n"
+            f"• Порог: {config.SCORE_THRESHOLD}/130\n"
+            f"• Максимум монет: {config.MAX_SYMBOLS}\n\n"
+            f"📊 <b>Новые индикаторы:</b>\n"
+            f"• 📈 OI за 5/15/30 минут (до 25 баллов)\n"
+            f"• 📉 CVD (дельта) (до 15 баллов)\n"
+            f"• 📊 Bid/Ask дисбаланс (до 10 баллов)\n"
+            f"• ⚡ Ускорение цены (до 10 баллов)\n"
+            f"• 🔥 Ликвидации (до 15 баллов)\n"
+            f"• 🤝 Синергия Volume+OI (до 10 баллов)\n\n"
+            f"✅ Сканирование запущено!",
             parse_mode='HTML'
         )
         
@@ -79,16 +75,9 @@ class TelegramNotifier:
             self.scan_task = asyncio.create_task(self._run_scanning())
     
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обработчик команды /stop
-        Останавливает сканирование
-        """
+        """Команда /stop - останавливает сканирование"""
         if not self.is_scanning:
-            await update.message.reply_text(
-                "⚠️ Сканирование уже остановлено.\n"
-                "Для запуска используйте /start",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("⚠️ Сканирование уже остановлено.")
             return
         
         self.is_scanning = False
@@ -96,77 +85,62 @@ class TelegramNotifier:
             self.scan_task.cancel()
             self.scan_task = None
         
-        await update.message.reply_text(
-            "🛑 <b>Сканирование ОСТАНОВЛЕНО!</b>\n\n"
-            "Для возобновления используйте /start",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("🛑 Сканирование ОСТАНОВЛЕНО!\nДля запуска используйте /start")
         logger.info("⏹️ Сканирование остановлено по команде /stop")
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /status"""
+        """Команда /status - показывает статус"""
         status = "✅ АКТИВЕН" if self.is_scanning else "⏸️ ОСТАНОВЛЕН"
-        
-        message = f"""
-📊 <b>СТАТУС БОТА</b>
-🕐 {datetime.now().strftime('%H:%M:%S')}
-
-📈 <b>Статус сканирования:</b> {status}
-
-📊 <b>Настройки:</b>
-• Интервал: {config.CHECK_INTERVAL} сек
-• Порог: {config.SCORE_THRESHOLD}/100
-• Максимум монет: {config.MAX_SYMBOLS}
-• Топ сигналов: {config.TOP_SIGNALS}
-
-📱 <b>Команды:</b>
-/start - Запустить сканирование
-/stop - Остановить сканирование
-/status - Этот статус
-/help - Помощь
-"""
-        await update.message.reply_text(message, parse_mode='HTML')
+        await update.message.reply_text(
+            f"📊 <b>СТАТУС БОТА</b>\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"📈 Статус сканирования: {status}\n"
+            f"⏱️ Интервал: {config.CHECK_INTERVAL} сек\n"
+            f"🎯 Порог: {config.SCORE_THRESHOLD}/130\n"
+            f"📊 Максимум монет: {config.MAX_SYMBOLS}\n\n"
+            f"📊 <b>Новые индикаторы:</b>\n"
+            f"• OI 5/15/30 мин\n"
+            f"• CVD (дельта)\n"
+            f"• Bid/Ask дисбаланс\n"
+            f"• Ускорение цены\n"
+            f"• Ликвидации\n"
+            f"• Синергия Volume+OI\n\n"
+            f"📱 Команды:\n"
+            f"/start - Запустить\n"
+            f"/stop - Остановить\n"
+            f"/status - Статус\n"
+            f"/help - Помощь",
+            parse_mode='HTML'
+        )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /help"""
-        message = """
-❓ <b>ПОМОЩЬ</b>
-
-📌 <b>Что делает бот?</b>
-Сканирует Bybit и ищет потенциальные пампы.
-
-📌 <b>Как запустить?</b>
-Команда <b>/start</b> - запускает сканирование
-
-📌 <b>Как остановить?</b>
-Команда <b>/stop</b> - останавливает сканирование
-
-📌 <b>Как работают сигналы?</b>
-Каждые 5 минут бот проверяет монеты.
-Если находит памп - присылает <b>СО ЗВУКОМ</b> 🔔
-Если сигналов нет - присылает <b>БЕЗ ЗВУКА</b> 📊
-
-📌 <b>Что значат баллы?</b>
-• 80-100: 🔴 ВЫСОКАЯ вероятность
-• 70-79: 🟡 СРЕДНЯЯ вероятность
-• 60-69: 🟢 НИЗКАЯ вероятность
-
-📌 <b>Как я считаю?</b>
-• Всплеск объёма → до 30 баллов
-• Рост OI → до 20 баллов
-• Funding → до 15 баллов
-• Рост цены → до 15 баллов
-
-──────────────
-⚙️ <b>Команды:</b>
-/start - Запустить сканирование
-/stop - Остановить сканирование
-/status - Статус бота
-/help - Эта справка
-
-⚠️ <i>Все решения по торговле - на ваш страх и риск.</i>
-"""
-        await update.message.reply_text(message, parse_mode='HTML')
+        """Команда /help - показывает помощь"""
+        await update.message.reply_text(
+            "❓ <b>ПОМОЩЬ</b>\n\n"
+            "📌 <b>Что делает бот?</b>\n"
+            "Сканирует Bybit и ищет пампы.\n\n"
+            "📌 <b>Новые индикаторы:</b>\n"
+            "• 📈 OI за 5/15/30 минут\n"
+            "• 📉 CVD (дельта покупок/продаж)\n"
+            "• 📊 Bid/Ask дисбаланс в стакане\n"
+            "• ⚡ Ускорение цены\n"
+            "• 🔥 Ликвидации шортов/лонгов\n"
+            "• 🤝 Синергия объёма и OI\n\n"
+            "📌 <b>Как запустить?</b>\n"
+            "Команда /start\n\n"
+            "📌 <b>Как остановить?</b>\n"
+            "Команда /stop\n\n"
+            "📌 <b>Как работают сигналы?</b>\n"
+            "Каждые 5 минут бот проверяет монеты.\n"
+            "Если находит памп - присылает <b>СО ЗВУКОМ</b> 🔔\n"
+            "Если сигналов нет - присылает <b>БЕЗ ЗВУКА</b> 📊\n\n"
+            "📱 <b>Команды:</b>\n"
+            "/start - Запустить\n"
+            "/stop - Остановить\n"
+            "/status - Статус\n"
+            "/help - Помощь",
+            parse_mode='HTML'
+        )
     
     async def _run_scanning(self):
         """Фоновое сканирование"""
@@ -179,12 +153,8 @@ class TelegramNotifier:
                 
                 if signals:
                     await self.send_top_signals(signals)
-                    logger.info(f"✅ Отправлено {len(signals)} сигналов с звуком!")
-                    for s in signals:
-                        logger.info(f"   {s['symbol']}: {s['score']}/100")
                 else:
                     await self.send_scan_status(0)
-                    logger.info("ℹ️ Сигналов не найдено (тихое уведомление)")
                 
                 # Ждём до следующего сканирования
                 for _ in range(config.CHECK_INTERVAL):
@@ -196,7 +166,7 @@ class TelegramNotifier:
                 logger.info("👋 Фоновое сканирование отменено")
                 break
             except Exception as e:
-                logger.error(f"Ошибка в фоновом сканировании: {e}")
+                logger.error(f"❌ Ошибка в фоновом сканировании: {e}")
                 await asyncio.sleep(60)
         
         logger.info("⏹️ Фоновое сканирование завершено")
@@ -211,14 +181,13 @@ class TelegramNotifier:
                 disable_web_page_preview=True,
                 disable_notification=silent
             )
-            logger.info(f"Сообщение отправлено в Telegram (silent={silent})")
             return True
         except Exception as e:
-            logger.error(f"Ошибка отправки в Telegram: {e}")
+            logger.error(f"❌ Ошибка отправки: {e}")
             return False
     
     async def send_scan_status(self, signals_count):
-        """Отправка статуса сканирования (БЕЗ ЗВУКА)"""
+        """Отправка статуса (БЕЗ ЗВУКА)"""
         message = f"""
 📊 <b>Сканирование завершено</b>
 🕐 {datetime.now().strftime('%H:%M:%S')}
@@ -226,13 +195,10 @@ class TelegramNotifier:
 📈 Найдено сигналов: <b>{signals_count}</b>
 {'🔍 Продолжаем мониторинг...' if signals_count == 0 else '🚀 Есть потенциальные пампы!'}
 """
-        return await self.send_message(message, silent=True)
+        await self.send_message(message, silent=True)
     
     async def send_top_signals(self, signals):
-        """Отправка топ сигналов (СО ЗВУКОМ)"""
-        if not signals:
-            return await self.send_scan_status(0)
-        
+        """Отправка сигналов (СО ЗВУКОМ) с новыми индикаторами"""
         await self.send_scan_status(len(signals))
         
         message = f"""
@@ -245,26 +211,41 @@ class TelegramNotifier:
 """
         
         for i, signal in enumerate(signals[:config.TOP_SIGNALS], 1):
-            if signal['score'] >= 80:
+            # Определяем вероятность
+            if signal['score'] >= 100:
                 prob = "🔴 ВЫСОКАЯ"
                 star = "⭐"
-            elif signal['score'] >= 70:
+            elif signal['score'] >= 80:
                 prob = "🟡 СРЕДНЯЯ"
                 star = "🌟"
             else:
                 prob = "🟢 НИЗКАЯ"
                 star = "💫"
             
+            # Синергия
+            synergy_text = "✅" if signal.get('synergy', False) else "❌"
+            
+            # Ликвидации
+            liq_text = ""
+            if signal.get('liq_short', 0) > signal.get('liq_long', 0) * 1.5:
+                liq_text = "🟢 Шортов больше"
+            elif signal.get('liq_long', 0) > signal.get('liq_short', 0) * 1.5:
+                liq_text = "🔴 Лонгов больше"
+            
             message += f"""
 <b>{star} #{i} {signal['symbol']}</b>
-┌─────────────────────
-│ 📊 Рейтинг: <b>{signal['score']}/100</b> | {prob}
+┌─────────────────────────────────────
+│ 📊 Рейтинг: <b>{signal['score']}/130</b> | {prob}
 │ 📈 Цена: +{signal['price_change']:.2f}%
-│ 📊 Объём: {signal['volume_ratio']:.1f}x от среднего
+│ 📊 Объём: {signal['volume_ratio']:.1f}x
 │ 💰 OI: +{signal['oi_change']:.1f}%
-│ ⚡ Funding: {signal['funding']*100:.4f}%
+│ 📉 CVD: {signal.get('cvd', 0):.0f}
+│ 📊 Bid/Ask: {signal.get('bid_imbalance', 0):.1f}%
+│ ⚡ Ускорение: {signal.get('acceleration', 1):.1f}x
+│ 🔥 Ликвидации: ${signal.get('liq_total', 0)/1e6:.2f}M {liq_text}
 │ 📉 До сопротивления: {signal['resistance_gap']:.1f}%
-└─────────────────────
+│ 🤝 Синергия Volume+OI: {synergy_text}
+└─────────────────────────────────────
 """
         
         message += """
@@ -272,7 +253,7 @@ class TelegramNotifier:
 Все решения принимайте на свой страх и риск.</i>
 """
         
-        return await self.send_message(message, silent=False)
+        await self.send_message(message, silent=False)
     
     async def run_bot(self):
         """Запуск Telegram бота"""
@@ -281,7 +262,6 @@ class TelegramNotifier:
             
             self.application = Application.builder().token(config.TELEGRAM_TOKEN).build()
             
-            # Регистрируем команды
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("stop", self.stop_command))
             self.application.add_handler(CommandHandler("status", self.status_command))
