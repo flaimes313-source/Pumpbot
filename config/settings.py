@@ -6,9 +6,24 @@ from pathlib import Path
 # Добавляем корневую папку в путь
 sys.path.append(str(Path(__file__).parent.parent))
 
-# Указываем путь к .env файлу
+# ============================================
+# ЗАГРУЗКА ПЕРЕМЕННЫХ
+# ============================================
+
+# 1. Пытаемся загрузить .env (локально)
 env_path = Path(__file__).parent.parent / '.env'
-load_dotenv(env_path)
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"✅ .env загружен из: {env_path}")
+else:
+    print(f"ℹ️ .env не найден, используем переменные окружения")
+
+# 2. Диагностика (показывает, какие переменные найдены)
+print("="*50)
+print("🔍 ДИАГНОСТИКА ПЕРЕМЕННЫХ:")
+print(f"TELEGRAM_TOKEN: {'✅ НАЙДЕН' if os.getenv('TELEGRAM_TOKEN') else '❌ НЕ НАЙДЕН'}")
+print(f"TELEGRAM_CHAT_ID: {'✅ НАЙДЕН' if os.getenv('TELEGRAM_CHAT_ID') else '❌ НЕ НАЙДЕН'}")
+print("="*50)
 
 class Config:
     # Telegram (ОБЯЗАТЕЛЬНО!)
@@ -41,11 +56,20 @@ class Config:
     def validate(cls):
         errors = []
         if not cls.TELEGRAM_TOKEN:
-            errors.append("TELEGRAM_TOKEN не задан! Получите у @BotFather")
+            errors.append("❌ TELEGRAM_TOKEN не задан!")
         if not cls.TELEGRAM_CHAT_ID:
-            errors.append("TELEGRAM_CHAT_ID не задан! Получите у @userinfobot")
+            errors.append("❌ TELEGRAM_CHAT_ID не задан!")
+        
         if errors:
+            print("\n".join(errors))
+            print("\n📝 Как исправить:")
+            print("1. На хостинге добавьте переменные окружения:")
+            print("   TELEGRAM_TOKEN=ваш_токен")
+            print("   TELEGRAM_CHAT_ID=ваш_id")
+            print("2. Локально создайте файл .env в корне проекта")
             raise ValueError("\n".join(errors))
+        
+        print("✅ Все настройки проверены успешно!")
         return True
 
 config = Config()
