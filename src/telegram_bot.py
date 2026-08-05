@@ -13,36 +13,58 @@ class TelegramNotifier:
         self.chat_id = config.TELEGRAM_CHAT_ID
         logger.info("Telegram бот инициализирован")
     
-    async def send_message(self, text):
-        """Отправка сообщения"""
+    async def send_message(self, text, silent=False):
+        """
+        Отправка сообщения
+        silent=True - без звука (тихое уведомление)
+        silent=False - со звуком
+        """
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=text,
                 parse_mode='HTML',
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
+                disable_notification=silent  # True = без звука, False = со звуком
             )
-            logger.info("Сообщение отправлено в Telegram")
+            logger.info(f"Сообщение отправлено в Telegram (silent={silent})")
             return True
         except Exception as e:
             logger.error(f"Ошибка отправки в Telegram: {e}")
             return False
     
+    async def send_scan_status(self, signals_count):
+        """
+        Отправка статуса сканирования
+        Всегда без звука (silent=True)
+        """
+        message = f"""
+📊 <b>Сканирование завершено</b>
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+📈 Найдено сигналов: <b>{signals_count}</b>
+{'🔍 Продолжаем мониторинг...' if signals_count == 0 else '🚀 Есть потенциальные пампы!'}
+"""
+        # Отправляем БЕЗ звука (silent=True)
+        return await self.send_message(message, silent=True)
+    
     async def send_top_signals(self, signals):
         """
         Отправка топ сигналов
-        ОТПРАВЛЯЕТ ТОЛЬКО ЕСЛИ ЕСТЬ СИГНАЛЫ!
+        СО ЗВУКОМ! (silent=False)
         """
-        # ЕСЛИ СИГНАЛОВ НЕТ - НИЧЕГО НЕ ОТПРАВЛЯЕМ
         if not signals:
-            logger.info("ℹ️ Сигналов нет, сообщение не отправлено")
-            return True
+            # Если сигналов нет - отправляем статус без звука
+            return await self.send_scan_status(0)
         
         # ============================================
         # ЕСЛИ СИГНАЛЫ ЕСТЬ - ОТПРАВЛЯЕМ С ЗВУКОМ!
         # ============================================
         
-        # Заголовок с эмодзи и звонком
+        # Сначала отправляем статус без звука
+        await self.send_scan_status(len(signals))
+        
+        # Заголовок с эмодзи (со звуком)
         message = f"""
 🔔🔊 <b>ВНИМАНИЕ! ОБНАРУЖЕНЫ ПАМП-СИГНАЛЫ!</b>
 
@@ -82,54 +104,5 @@ class TelegramNotifier:
 Все решения принимайте на свой страх и риск.</i>
 """
         
-        # Отправляем сообщение
-        result = await self.send_message(message)
-        
-        # ============================================
-        # ОТПРАВЛЯЕМ ЗВУКОВОЕ УВЕДОМЛЕНИЕ!
-        # ============================================
-        if result:
-            await self.send_sound_alert()
-        
-        return result
-    
-    async def send_sound_alert(self):
-        """
-        Отправка звукового уведомления в Telegram
-        Использует голосовое сообщение или стикер
-        """
-        try:
-            # Вариант 1: Отправить голосовое сообщение (OGG файл)
-            # Для этого нужно загрузить файл на сервер или использовать URL
-            # voice_url = "https://example.com/alert.ogg"
-            
-            # Вариант 2: Отправить аудио (простой способ - использовать уведомление)
-            # В Telegram есть встроенный звук для уведомлений @
-            
-            # Вариант 3: Отправить стикер с звуком (самый простой)
-            # Это сработает как обычное сообщение, но с эмодзи и выделением
-            
-            # Отправляем дополнительное короткое сообщение с @ для звука
-            sound_message = """
-🔊 <b>‼️ СРАБОТАЛ ДЕТЕКТОР ПАМПОВ ‼️</b>
-Проверьте сигналы выше! 🚀
-"""
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=sound_message,
-                parse_mode='HTML'
-            )
-            
-            # Вариант 4: Отправить голосовое сообщение (если есть файл)
-            # with open('alert.ogg', 'rb') as voice:
-            #     await self.bot.send_voice(
-            #         chat_id=self.chat_id,
-            #         voice=voice
-            #     )
-            
-            logger.info("🔊 Звуковое уведомление отправлено")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки звука: {e}")
-            return False
+        # Отправляем СО ЗВУКОМ (silent=False)
+        return await self.send_message(message, silent=False)

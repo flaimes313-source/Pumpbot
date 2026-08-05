@@ -50,12 +50,11 @@ class BybitClient:
                 ]
                 logger.info(f"✅ Загружено {len(self.linear_symbols)} фьючерсных пар USDT")
             
-            # 3. Пересечение (есть на споте и фьючерсах)
+            # 3. Пересечение
             spot_set = set(self.spot_symbols)
             linear_set = set(self.linear_symbols)
             self.all_symbols = list(spot_set.intersection(linear_set))
             
-            # Сортируем по объёму
             self.all_symbols = self._sort_by_volume(self.all_symbols)
             
             logger.info(f"✅ Найдено {len(self.all_symbols)} монет для анализа")
@@ -92,14 +91,26 @@ class BybitClient:
             )
             if response['retCode'] == 0:
                 data = response['result']['list']
+                
+                # Добавим проверку, чтобы не ломаться, если пришел пустой список
+                if not data:
+                    return pd.DataFrame()
+
                 df = pd.DataFrame(data, columns=[
                     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'
                 ])
+                
+                # --- ИСПРАВЛЕНИЕ ОШИБКИ Python int too large to convert to C long ---
+                # Безопасно конвертируем строку timestamp в число, а затем в дату
+                df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                # --------------------------------------------------------------------
+
                 df['close'] = df['close'].astype(float)
                 df['high'] = df['high'].astype(float)
                 df['low'] = df['low'].astype(float)
                 df['volume'] = df['volume'].astype(float)
-                df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='ms')
+                
                 return df
         except Exception as e:
             logger.error(f"Ошибка получения свечей {symbol}: {e}")

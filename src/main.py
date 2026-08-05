@@ -33,7 +33,9 @@ async def main_loop():
             signals = detector.scan_all_symbols()
             
             # =========================================================
-            # ОТПРАВЛЯЕМ ТОЛЬКО ЕСЛИ ЕСТЬ СИГНАЛЫ (С ЗВУКОМ!)
+            # ОТПРАВЛЯЕМ В TELEGRAM
+            # - Если сигналов нет → без звука
+            # - Если сигналы есть → со звуком!
             # =========================================================
             if signals:
                 await notifier.send_top_signals(signals)
@@ -41,8 +43,9 @@ async def main_loop():
                 for s in signals:
                     logger.info(f"   {s['symbol']}: {s['score']}/100")
             else:
-                # Просто логируем, НЕ отправляем в Telegram
-                logger.info("ℹ️ Сигналов не найдено (тишина)")
+                # Отправляем статус БЕЗ звука
+                await notifier.send_scan_status(0)
+                logger.info("ℹ️ Сигналов не найдено (тихое уведомление)")
             
             elapsed = time.time() - start_time
             wait_time = max(60, config.CHECK_INTERVAL - elapsed)
