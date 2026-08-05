@@ -8,7 +8,7 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
-    """Отправка уведомлений в Telegram"""
+    """Отправка уведомлений в Telegram с двухстадийной системой"""
     
     def __init__(self):
         self.bot = Bot(token=config.TELEGRAM_TOKEN)
@@ -34,11 +34,17 @@ class TelegramNotifier:
                 f"👋 Привет, {user_name}!\n\n"
                 f"✅ Сканирование УЖЕ запущено!\n"
                 f"🔄 Бот работает в фоновом режиме.\n\n"
-                f"📊 <b>Новые индикаторы:</b>\n"
+                f"📊 <b>Двухстадийная система:</b>\n"
+                f"🟡 Стадия 1 — Раннее предупреждение (50-69 баллов)\n"
+                f"🟢 Стадия 2 — Памп/Дамп подтвержден (70+ баллов)\n\n"
+                f"🎯 <b>Направление:</b>\n"
+                f"🟢 LONG — памп вверх\n"
+                f"🔴 SHORT — дамп вниз\n\n"
+                f"📊 <b>Индикаторы:</b>\n"
                 f"• 📈 OI за 5/15/30 минут\n"
                 f"• 📉 CVD (дельта покупок/продаж)\n"
-                f"• 📊 Bid/Ask дисбаланс\n"
-                f"• ⚡ Ускорение цены\n"
+                f"• 📊 Bid/Ask дисбаланс (Top 25)\n"
+                f"• ⚡ Ускорение цены (только вверх)\n"
                 f"• 🔥 Ликвидации\n"
                 f"• 🤝 Синергия Volume+OI\n\n"
                 f"📱 Команды:\n"
@@ -57,15 +63,17 @@ class TelegramNotifier:
             f"🚀 ЗАПУСКАЮ СКАНИРОВАНИЕ...\n\n"
             f"📊 <b>Настройки:</b>\n"
             f"• Интервал: {config.CHECK_INTERVAL} сек\n"
-            f"• Порог: {config.SCORE_THRESHOLD}/130\n"
+            f"• Порог Стадии 1: 50/130\n"
+            f"• Порог Стадии 2: 70/130\n"
             f"• Максимум монет: {config.MAX_SYMBOLS}\n\n"
-            f"📊 <b>Новые индикаторы:</b>\n"
-            f"• 📈 OI за 5/15/30 минут (до 25 баллов)\n"
-            f"• 📉 CVD (дельта) (до 15 баллов)\n"
-            f"• 📊 Bid/Ask дисбаланс (до 10 баллов)\n"
-            f"• ⚡ Ускорение цены (до 10 баллов)\n"
-            f"• 🔥 Ликвидации (до 15 баллов)\n"
-            f"• 🤝 Синергия Volume+OI (до 10 баллов)\n\n"
+            f"📊 <b>Двухстадийная система:</b>\n"
+            f"🟡 Стадия 1 — Раннее предупреждение\n"
+            f"   Объём и OI растут, цена ещё не ушла\n"
+            f"🟢 Стадия 2 — Памп/Дамп подтвержден\n"
+            f"   Цена пробила, движение подтверждено\n\n"
+            f"🎯 <b>Направление:</b>\n"
+            f"🟢 LONG — памп вверх\n"
+            f"🔴 SHORT — дамп вниз\n\n"
             f"✅ Сканирование запущено!",
             parse_mode='HTML'
         )
@@ -96,13 +104,20 @@ class TelegramNotifier:
             f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
             f"📈 Статус сканирования: {status}\n"
             f"⏱️ Интервал: {config.CHECK_INTERVAL} сек\n"
-            f"🎯 Порог: {config.SCORE_THRESHOLD}/130\n"
+            f"🎯 Порог Стадии 1: 50/130\n"
+            f"🎯 Порог Стадии 2: 70/130\n"
             f"📊 Максимум монет: {config.MAX_SYMBOLS}\n\n"
-            f"📊 <b>Новые индикаторы:</b>\n"
+            f"📊 <b>Двухстадийная система:</b>\n"
+            f"🟡 Стадия 1 — Раннее предупреждение\n"
+            f"🟢 Стадия 2 — Памп/Дамп подтвержден\n\n"
+            f"🎯 <b>Направление:</b>\n"
+            f"🟢 LONG — памп вверх\n"
+            f"🔴 SHORT — дамп вниз\n\n"
+            f"📊 <b>Индикаторы:</b>\n"
             f"• OI 5/15/30 мин\n"
             f"• CVD (дельта)\n"
-            f"• Bid/Ask дисбаланс\n"
-            f"• Ускорение цены\n"
+            f"• Bid/Ask дисбаланс (Top 25)\n"
+            f"• Ускорение цены (вверх)\n"
             f"• Ликвидации\n"
             f"• Синергия Volume+OI\n\n"
             f"📱 Команды:\n"
@@ -118,21 +133,36 @@ class TelegramNotifier:
         await update.message.reply_text(
             "❓ <b>ПОМОЩЬ</b>\n\n"
             "📌 <b>Что делает бот?</b>\n"
-            "Сканирует Bybit и ищет пампы.\n\n"
-            "📌 <b>Новые индикаторы:</b>\n"
-            "• 📈 OI за 5/15/30 минут\n"
-            "• 📉 CVD (дельта покупок/продаж)\n"
-            "• 📊 Bid/Ask дисбаланс в стакане\n"
-            "• ⚡ Ускорение цены\n"
-            "• 🔥 Ликвидации шортов/лонгов\n"
-            "• 🤝 Синергия объёма и OI\n\n"
+            "Сканирует Bybit и ищет пампы (LONG) и дампы (SHORT).\n\n"
+            "📌 <b>Двухстадийная система:</b>\n"
+            "🟡 <b>Стадия 1 — Раннее предупреждение</b>\n"
+            "• Объём и OI растут\n"
+            "• Цена ещё не ушла (< 2%)\n"
+            "• Появляются агрессивные покупки/продажи\n"
+            "• Баллы: 50-69\n\n"
+            "🟢 <b>Стадия 2 — Памп/Дамп подтвержден</b>\n"
+            "• Цена пробила (> 2%)\n"
+            "• Объём высокий (> 2x)\n"
+            "• OI растёт (> 5%)\n"
+            "• Все индикаторы подтверждают\n"
+            "• Баллы: 70+\n\n"
+            "📌 <b>Направление:</b>\n"
+            "🟢 <b>LONG</b> — памп вверх (бычий сигнал)\n"
+            "🔴 <b>SHORT</b> — дамп вниз (медвежий сигнал)\n\n"
+            "📌 <b>Индикаторы:</b>\n"
+            "• 📈 OI за 5/15/30 минут (до 25 баллов)\n"
+            "• 📉 CVD (дельта покупок/продаж) (до 15 баллов)\n"
+            "• 📊 Bid/Ask дисбаланс (Top 25) (до 10 баллов)\n"
+            "• ⚡ Ускорение цены (только вверх) (до 10 баллов)\n"
+            "• 🔥 Ликвидации шортов/лонгов (до 15 баллов)\n"
+            "• 🤝 Синергия объёма и OI (до 10 баллов)\n\n"
             "📌 <b>Как запустить?</b>\n"
             "Команда /start\n\n"
             "📌 <b>Как остановить?</b>\n"
             "Команда /stop\n\n"
             "📌 <b>Как работают сигналы?</b>\n"
             "Каждые 5 минут бот проверяет монеты.\n"
-            "Если находит памп - присылает <b>СО ЗВУКОМ</b> 🔔\n"
+            "Если находит сигнал - присылает <b>СО ЗВУКОМ</b> 🔔\n"
             "Если сигналов нет - присылает <b>БЕЗ ЗВУКА</b> 📊\n\n"
             "📱 <b>Команды:</b>\n"
             "/start - Запустить\n"
@@ -193,29 +223,45 @@ class TelegramNotifier:
 🕐 {datetime.now().strftime('%H:%M:%S')}
 
 📈 Найдено сигналов: <b>{signals_count}</b>
-{'🔍 Продолжаем мониторинг...' if signals_count == 0 else '🚀 Есть потенциальные пампы!'}
+{'🔍 Продолжаем мониторинг...' if signals_count == 0 else '🚀 Есть потенциальные сигналы!'}
 """
         await self.send_message(message, silent=True)
     
     async def send_top_signals(self, signals):
-        """Отправка сигналов (СО ЗВУКОМ) с новыми индикаторами"""
+        """Отправка сигналов (СО ЗВУКОМ) с двухстадийной системой и направлением"""
         await self.send_scan_status(len(signals))
         
         message = f"""
-🔔🔊 <b>ВНИМАНИЕ! ОБНАРУЖЕНЫ ПАМП-СИГНАЛЫ!</b>
+🔔🔊 <b>ВНИМАНИЕ! ОБНАРУЖЕНЫ СИГНАЛЫ!</b>
 
-🚀 <b>ТОП-{min(len(signals), config.TOP_SIGNALS)} ПАМП СИГНАЛОВ</b>
+🚀 <b>ТОП-{min(len(signals), config.TOP_SIGNALS)} СИГНАЛОВ</b>
 📅 {datetime.now().strftime('%H:%M:%S')}
 📊 Всего найдено: {len(signals)}
 
 """
         
         for i, signal in enumerate(signals[:config.TOP_SIGNALS], 1):
+            # Определяем стадию
+            stage_emoji = "🟢" if signal.get('stage', 0) == 2 else "🟡"
+            stage_text = signal.get('stage_message', '')
+            
+            # Определяем направление
+            direction = signal.get('direction', 'NEUTRAL')
+            if direction == "LONG":
+                direction_emoji = "🟢"
+                direction_text = "LONG (памп вверх)"
+            elif direction == "SHORT":
+                direction_emoji = "🔴"
+                direction_text = "SHORT (дамп вниз)"
+            else:
+                direction_emoji = "⚪"
+                direction_text = "NEUTRAL"
+            
             # Определяем вероятность
-            if signal['score'] >= 100:
+            if signal['score'] >= 80:
                 prob = "🔴 ВЫСОКАЯ"
                 star = "⭐"
-            elif signal['score'] >= 80:
+            elif signal['score'] >= 65:
                 prob = "🟡 СРЕДНЯЯ"
                 star = "🌟"
             else:
@@ -227,16 +273,36 @@ class TelegramNotifier:
             
             # Ликвидации
             liq_text = ""
-            if signal.get('liq_short', 0) > signal.get('liq_long', 0) * 1.5:
-                liq_text = "🟢 Шортов больше"
-            elif signal.get('liq_long', 0) > signal.get('liq_short', 0) * 1.5:
-                liq_text = "🔴 Лонгов больше"
+            liq_short = signal.get('liq_short', 0)
+            liq_long = signal.get('liq_long', 0)
+            if liq_short > liq_long * 1.5:
+                liq_text = "🟢 Шортов больше (бычий)"
+            elif liq_long > liq_short * 1.5:
+                liq_text = "🔴 Лонгов больше (медвежий)"
+            
+            # Дополнительная информация о стадии
+            stage_info = ""
+            if signal.get('stage', 0) == 1:
+                if direction == "LONG":
+                    stage_info = "📌 Объём и OI растут, цена готовится к пробою ВВЕРХ"
+                elif direction == "SHORT":
+                    stage_info = "📌 Объём и OI растут, цена готовится к пробою ВНИЗ"
+                else:
+                    stage_info = "📌 Объём и OI растут, направление уточняется"
+            elif signal.get('stage', 0) == 2:
+                if direction == "LONG":
+                    stage_info = "📌 ПАМП ПОДТВЕРЖДЕН! Движение вверх 🚀"
+                elif direction == "SHORT":
+                    stage_info = "📌 ДАМП ПОДТВЕРЖДЕН! Движение вниз 💥"
+                else:
+                    stage_info = "📌 Движение подтверждено, направление уточняется"
             
             message += f"""
-<b>{star} #{i} {signal['symbol']}</b>
+{stage_emoji} <b>#{i} {signal['symbol']}</b> — {stage_text}
 ┌─────────────────────────────────────
-│ 📊 Рейтинг: <b>{signal['score']}/130</b> | {prob}
-│ 📈 Цена: +{signal['price_change']:.2f}%
+│ 📊 Рейтинг: <b>{signal['score']}/130</b> | {prob} | {star}
+│ 🎯 Направление: {direction_emoji} <b>{direction_text}</b>
+│ 📈 Цена: {signal['price_change']:+.2f}%
 │ 📊 Объём: {signal['volume_ratio']:.1f}x
 │ 💰 OI: +{signal['oi_change']:.1f}%
 │ 📉 CVD: {signal.get('cvd', 0):.0f}
@@ -245,6 +311,7 @@ class TelegramNotifier:
 │ 🔥 Ликвидации: ${signal.get('liq_total', 0)/1e6:.2f}M {liq_text}
 │ 📉 До сопротивления: {signal['resistance_gap']:.1f}%
 │ 🤝 Синергия Volume+OI: {synergy_text}
+│ 📌 {stage_info}
 └─────────────────────────────────────
 """
         
@@ -260,8 +327,12 @@ class TelegramNotifier:
         try:
             logger.info("🔄 Запускаем Telegram бота...")
             
+            # Удаляем старые обновления
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            
             self.application = Application.builder().token(config.TELEGRAM_TOKEN).build()
             
+            # Регистрируем команды
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("stop", self.stop_command))
             self.application.add_handler(CommandHandler("status", self.status_command))
@@ -269,7 +340,10 @@ class TelegramNotifier:
             
             await self.application.initialize()
             await self.application.start()
-            await self.application.updater.start_polling()
+            await self.application.updater.start_polling(
+                drop_pending_updates=True,
+                timeout=30
+            )
             
             logger.info("✅ Telegram бот запущен! Команды: /start, /stop, /status, /help")
             return True
