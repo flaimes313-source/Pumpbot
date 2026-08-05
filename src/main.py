@@ -15,6 +15,7 @@ logger = setup_logging()
 async def main():
     """Запуск бота"""
     try:
+        # Проверяем настройки
         config.validate()
         logger.info("✅ Настройки проверены успешно")
         
@@ -26,12 +27,29 @@ async def main():
         notifier.set_detector(detector)
         
         # Загружаем символы для WebSocket
-        symbols = detector.client.load_all_symbols()
-        if symbols:
-            symbols_to_watch = symbols[:config.MAX_SYMBOLS]
-            # Запускаем WebSocket в фоне
-            asyncio.create_task(trade_stream.connect(symbols_to_watch))
-            logger.info(f"✅ WebSocket запущен для {len(symbols_to_watch)} символов")
+        try:
+            logger.info("🔄 Загружаем символы для TradeStream...")
+            symbols = detector.client.load_all_symbols()
+            if symbols:
+                symbols_to_watch = symbols[:config.MAX_SYMBOLS]
+                logger.info(f"📊 Загружено {len(symbols_to_watch)} символов для WebSocket")
+                
+                # Запускаем TradeStream с защитой от ошибок
+                try:
+                    asyncio.create_task(trade_stream.connect(symbols_to_watch))
+                    logger.info(f"✅ TradeStream запущен для {len(symbols_to_watch)} символов")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка запуска TradeStream: {e}")
+                    logger.info("ℹ️ TradeStream будет работать в режиме эмуляции")
+                    trade_stream.use_websocket = False
+                    asyncio.create_task(trade_stream._emulate_trades())
+            else:
+                logger.warning("⚠️ Не удалось загрузить символы для WebSocket")
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки символов: {e}")
+            logger.info("ℹ️ TradeStream будет работать в режиме эмуляции")
+            trade_stream.use_websocket = False
+            asyncio.create_task(trade_stream._emulate_trades())
         
         logger.info("="*50)
         logger.info("🚀 BYBIT PUMP DETECTOR v2.0")
@@ -46,6 +64,8 @@ async def main():
         logger.info("   ✅ Асинхронное сканирование (asyncio.gather)")
         logger.info("   ✅ Динамические пороги (на основе ATR)")
         logger.info("   ✅ Команда /pause (поставить на паузу)")
+        logger.info("   ✅ Автоматическое переподключение WebSocket")
+        logger.info("   ✅ Режим эмуляции при недоступности WebSocket")
         logger.info("="*50)
         logger.info("🤖 Бот запущен!")
         logger.info("📱 Команды в Telegram:")
@@ -64,23 +84,58 @@ async def main():
         logger.info("⏳ Ожидание команд из Telegram...")
         while True:
             try:
-                # Ждём команды
-                await asyncio.sleep(1)
+                # Проверяем статус сканирования
+                if not notifier.is_scanning:
+                    await asyncio.sleep(1)
+                    continue
+                
+                # Если сканирование активно и не на паузе
+                if not notifier.is_paused and detector:
+                    logger.info("🔍 Начинаем асинхронное сканирование...")
+                    
+                    # Используем асинхронное сканирование
+                    if hasattr(detector, 'scan_all_symbols_async'):
+                        signals = await detector.scan_all_symbols_async()
+                    else:
+                        signals = detector.scan_all_symbols()
+                    
+                    if signals:
+                        await notifier.send_top_signals(signals)
+                        logger.info(f"✅ Отправлено {len(signals)} сигналов")
+                    else:
+                        await notifier.send_scan_status(0)
+                        logger.info("ℹ️ Сигналов не найдено")
+                
+                # Ждём до следующего сканирования
+                for _ in range(config.CHECK_INTERVAL):
+                    if not notifier.is_scanning or notifier.is_paused:
+                        break
+                    await asyncio.sleep(1)
+                    
+            except asyncio.CancelledError:
+                logger.info("👋 Цикл сканирования отменён")
+                break
             except Exception as e:
-                logger.error(f"Ошибка в основном цикле: {e}")
-                await asyncio.sleep(5)
-            
+                logger.error(f"❌ Ошибка в основном цикле: {e}")
+                await asyncio.sleep(60)
+        
     except KeyboardInterrupt:
-        logger.info("👋 Бот остановлен")
+        logger.info("👋 Бот остановлен пользователем")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Критическая ошибка: {e}")
         raise
+    finally:
+        # Останавливаем TradeStream
+        trade_stream.stop()
+        logger.info("✅ TradeStream остановлен")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 Бот остановлен")
+        logger.info("👋 Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
