@@ -169,7 +169,10 @@ class TelegramNotifier:
     
     async def result_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /result - показывает результаты последнего сканирования"""
-        if not self.last_signals:
+        
+        logger.info(f"📊 Команда /result: сигналов={len(self.last_signals) if self.last_signals else 0}, время={self.last_scan_time}")
+        
+        if not self.last_scan_time:
             await update.message.reply_text(
                 "📊 <b>Результаты сканирования</b>\n\n"
                 "🔍 Сканирование ещё не проводилось.\n"
@@ -178,14 +181,15 @@ class TelegramNotifier:
             )
             return
         
-        last_scan_time = self.last_scan_time.strftime('%H:%M:%S') if self.last_scan_time else "Неизвестно"
+        last_scan_time = self.last_scan_time.strftime('%H:%M:%S')
         
         if not self.last_signals:
             await update.message.reply_text(
                 f"📊 <b>Результаты последнего сканирования</b>\n"
                 f"🕐 {last_scan_time}\n\n"
                 f"📈 Найдено сигналов: <b>0</b>\n"
-                f"🔍 Все тихо, пампа нет.",
+                f"🔍 Все тихо, пампа нет.\n\n"
+                f"💡 Используйте /start для запуска сканирования, если оно остановлено.",
                 parse_mode='HTML'
             )
             return
@@ -327,9 +331,13 @@ class TelegramNotifier:
                 else:
                     signals = self.detector.scan_all_symbols()
                 
-                # Сохраняем результаты
+                # ============================================================
+                # СОХРАНЯЕМ РЕЗУЛЬТАТЫ
+                # ============================================================
                 self.last_signals = signals if signals else []
                 self.last_scan_time = datetime.now()
+                logger.info(f"📊 Сохранено {len(self.last_signals)} сигналов, время: {self.last_scan_time.strftime('%H:%M:%S')}")
+                # ============================================================
                 
                 # Отправляем ТОЛЬКО если есть сигналы
                 if signals:
