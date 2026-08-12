@@ -24,12 +24,25 @@ def setup_logging():
 
 
 class SignalsHistory:
-    """Класс для работы с историей сигналов"""
+    """Класс для работы с историей сигналов (индивидуально для каждого пользователя)"""
     
     def __init__(self):
-        self.history_file = Path('data') / 'signals_history.json'
-        self.history_file.parent.mkdir(exist_ok=True)
+        self.history_dir = Path('data')
+        self.history_dir.mkdir(exist_ok=True)
+        self.current_chat_id = None
+        self.data = None
+        self.history_file = None
+    
+    def _get_user_file(self, chat_id):
+        """Возвращает путь к файлу истории для конкретного пользователя"""
+        return self.history_dir / f'signals_history_{chat_id}.json'
+    
+    def set_user(self, chat_id):
+        """Устанавливает текущего пользователя и загружает его историю"""
+        self.current_chat_id = chat_id
+        self.history_file = self._get_user_file(chat_id)
         self.data = self._load()
+        return self
     
     def _default_data(self):
         """Возвращает структуру по умолчанию"""
@@ -48,7 +61,7 @@ class SignalsHistory:
     def _ensure_file_exists(self):
         """Принудительное создание файла, если его нет"""
         if not self.history_file.exists():
-            logger.info("📁 Файл истории не найден, создаю новый...")
+            logger.info(f"📁 Файл истории для пользователя {self.current_chat_id} не найден, создаю новый...")
             self.data = self._default_data()
             self._save()
             logger.info(f"✅ Файл истории создан: {self.history_file}")
@@ -57,6 +70,9 @@ class SignalsHistory:
     
     def _load(self):
         """Загружает историю из файла"""
+        if self.history_file is None:
+            return self._default_data()
+        
         # Проверяем и создаём файл если нужно
         self._ensure_file_exists()
         
@@ -68,7 +84,6 @@ class SignalsHistory:
                 stats = data.get('stats', {})
                 default_stats = self._default_data()['stats']
                 
-                # Добавляем недостающие поля
                 need_update = False
                 for key in default_stats:
                     if key not in stats:
@@ -88,6 +103,9 @@ class SignalsHistory:
     
     def _save(self, data=None):
         """Сохраняет историю в файл"""
+        if self.history_file is None:
+            return False
+        
         try:
             if data is None:
                 data = self.data
@@ -104,7 +122,9 @@ class SignalsHistory:
         Добавляет новый сигнал в историю
         signal_data: dict с данными сигнала
         """
-        # Убеждаемся, что файл существует
+        if self.data is None:
+            return None
+        
         self._ensure_file_exists()
         
         signal_entry = {
@@ -136,9 +156,11 @@ class SignalsHistory:
         Обновляет статус сигнала
         status: 'confirmed', 'failed' или 'deleted'
         """
+        if self.data is None:
+            return False, "Пользователь не задан"
+        
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
-                # Если сигнал уже обработан и это не удаление
                 if signal['status'] != 'pending' and status != 'deleted':
                     return False, "Сигнал уже обработан"
                 
@@ -149,7 +171,6 @@ class SignalsHistory:
                 
                 # Обновляем статистику
                 if status == 'deleted':
-                    # Удаляем из статистики
                     if old_status == 'pending':
                         self.data['stats']['pending'] -= 1
                     elif old_status == 'confirmed':
@@ -158,7 +179,6 @@ class SignalsHistory:
                         self.data['stats']['failed'] -= 1
                     self.data['stats']['deleted'] += 1
                 else:
-                    # Меняем статус
                     if old_status == 'pending':
                         self.data['stats']['pending'] -= 1
                     elif old_status == 'confirmed':
@@ -171,7 +191,7 @@ class SignalsHistory:
                     elif status == 'failed':
                         self.data['stats']['failed'] += 1
                 
-                # Пересчитываем точность (только для confirmed и failed)
+                # Пересчитываем точность
                 total_answered = self.data['stats']['confirmed'] + self.data['stats']['failed']
                 if total_answered > 0:
                     self.data['stats']['accuracy'] = round(
@@ -187,10 +207,14 @@ class SignalsHistory:
     
     def get_stats(self):
         """Возвращает статистику"""
+        if self.data is None:
+            return self._default_data()['stats']
         return self.data['stats']
     
     def get_signal_by_id(self, signal_id):
         """Возвращает сигнал по ID"""
+        if self.data is None:
+            return None
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
                 return signal
@@ -198,10 +222,15 @@ class SignalsHistory:
     
     def get_recent_signals(self, limit=10):
         """Возвращает последние N сигналов"""
+        if self.data is None:
+            return []
         return self.data['signals'][-limit:][::-1]
     
     def get_stats_message(self):
         """Формирует сообщение со статистикой"""
+        if self.data is None:
+            return "📊 <b>Статистика сигналов</b>\n\nПока нет данных."
+        
         stats = self.data['stats']
         total = stats['total'] - stats['deleted']
         

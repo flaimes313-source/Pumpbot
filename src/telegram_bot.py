@@ -27,9 +27,19 @@ class TelegramNotifier:
     def set_detector(self, detector):
         self.detector = detector
     
+    def _get_chat_id(self, update: Update):
+        """Получает chat_id из обновления"""
+        if update.callback_query:
+            return update.callback_query.message.chat_id
+        elif update.message:
+            return update.message.chat_id
+        return None
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /start - запускает сканирование"""
         user = update.effective_user
         user_name = user.first_name if user.first_name else "Пользователь"
+        chat_id = update.message.chat_id
         
         if self.is_scanning:
             status_text = "⏸️ НА ПАУЗЕ" if self.is_paused else "✅ АКТИВЕН"
@@ -80,15 +90,20 @@ class TelegramNotifier:
             f"✅ Динамические пороги (на основе ATR)\n"
             f"✅ Команда /pause для паузы\n"
             f"✅ Кнопки обратной связи по сигналам\n"
-            f"✅ Статистика отработок /stats\n\n"
+            f"✅ Статистика отработок /stats\n"
+            f"✅ Индивидуальная статистика для каждого пользователя\n\n"
             f"✅ Сканирование запущено!",
             parse_mode='HTML'
         )
+        
+        # Устанавливаем пользователя в истории
+        signals_history.set_user(chat_id)
         
         if self.detector:
             self.scan_task = asyncio.create_task(self._run_scanning())
     
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /stop - останавливает сканирование"""
         if not self.is_scanning:
             await update.message.reply_text("⚠️ Сканирование уже остановлено.")
             return
@@ -110,6 +125,7 @@ class TelegramNotifier:
         logger.info("⏹️ Сканирование остановлено по команде /stop")
     
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /pause - поставить сканирование на паузу"""
         if not self.is_scanning:
             await update.message.reply_text(
                 "⚠️ Сканирование не запущено.\n"
@@ -139,6 +155,7 @@ class TelegramNotifier:
         logger.info("⏸️ Сканирование поставлено на паузу по команде /pause")
     
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /resume - возобновить сканирование"""
         if not self.is_scanning:
             await update.message.reply_text(
                 "⚠️ Сканирование остановлено.\n"
@@ -167,13 +184,15 @@ class TelegramNotifier:
         logger.info("▶️ Сканирование возобновлено по команде /resume")
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /stats - показывает статистику сигналов"""
+        chat_id = update.message.chat_id
+        signals_history.set_user(chat_id)
         stats_message = signals_history.get_stats_message()
         await update.message.reply_text(stats_message, parse_mode='HTML')
     
     async def result_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /result - показывает результаты последнего сканирования"""
         
-        # Проверяем, было ли хоть одно сканирование
         if self.last_scan_time is None:
             await update.message.reply_text(
                 "📊 <b>Результаты сканирования</b>\n\n"
@@ -185,7 +204,6 @@ class TelegramNotifier:
         
         last_scan_time = self.last_scan_time.strftime('%H:%M:%S')
         
-        # Если сигналов нет
         if not self.last_signals:
             await update.message.reply_text(
                 f"📊 <b>Результаты последнего сканирования</b>\n"
@@ -196,7 +214,6 @@ class TelegramNotifier:
             )
             return
         
-        # Формируем сообщение с результатами
         message = f"""
 📊 <b>Результаты последнего сканирования</b>
 🕐 {last_scan_time}
@@ -236,6 +253,7 @@ class TelegramNotifier:
         await update.message.reply_text(message, parse_mode='HTML')
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /status - показывает статус"""
         if not self.is_scanning:
             status_text = "⏹️ ОСТАНОВЛЕН"
         elif self.is_paused:
@@ -270,6 +288,7 @@ class TelegramNotifier:
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /help - показывает помощь"""
         await update.message.reply_text(
             "❓ <b>ПОМОЩЬ</b>\n\n"
             "📌 <b>Что делает бот?</b>\n"
@@ -294,6 +313,9 @@ class TelegramNotifier:
             "✅ <b>Отработал</b> — сигнал сработал\n"
             "❌ <b>Не отработал</b> — сигнал не сработал\n"
             "🗑️ <b>Удалить</b> — удалить сигнал из статистики\n\n"
+            "📌 <b>Индивидуальная статистика:</b>\n"
+            "У каждого пользователя своя статистика сигналов.\n"
+            "Ваши оценки не влияют на оценки других пользователей.\n\n"
             "📌 <b>Команды:</b>\n"
             "/start  - Запустить сканирование\n"
             "/stop   - Остановить сканирование\n"
@@ -325,13 +347,9 @@ class TelegramNotifier:
                 else:
                     signals = self.detector.scan_all_symbols()
                 
-                # ============================================================
-                # СОХРАНЯЕМ РЕЗУЛЬТАТЫ (ДАЖЕ ЕСЛИ СИГНАЛОВ 0)
-                # ============================================================
                 self.last_signals = signals if signals else []
                 self.last_scan_time = datetime.now()
                 logger.info(f"📊 Сохранено {len(self.last_signals)} сигналов, время: {self.last_scan_time.strftime('%H:%M:%S')}")
-                # ============================================================
                 
                 if signals:
                     await self.send_top_signals(signals)
@@ -354,6 +372,7 @@ class TelegramNotifier:
         logger.info("⏹️ Фоновое сканирование завершено")
     
     async def send_message(self, text, silent=False, reply_markup=None):
+        """Отправка сообщения"""
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
@@ -369,7 +388,11 @@ class TelegramNotifier:
             return False
     
     async def send_top_signals(self, signals):
+        """Отправка сигналов (СО ЗВУКОМ) с кнопками обратной связи"""
         for signal in signals[:config.TOP_SIGNALS]:
+            # Используем chat_id главного пользователя для сохранения истории
+            chat_id = self.chat_id
+            signals_history.set_user(chat_id)
             signal_id = signals_history.add_signal(signal)
             
             stage_emoji = "🟢" if signal.get('stage', 0) == 2 else "🟡"
@@ -450,7 +473,12 @@ class TelegramNotifier:
             await asyncio.sleep(0.5)
     
     async def handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка нажатия на кнопки обратной связи"""
         query = update.callback_query
+        chat_id = query.message.chat_id
+        
+        # Устанавливаем пользователя в истории
+        signals_history.set_user(chat_id)
         
         if query.message.message_id in self.pending_callbacks:
             await query.answer("⏳ Обработка...", show_alert=False)
@@ -507,7 +535,7 @@ class TelegramNotifier:
                     reply_markup=None
                 )
                 
-                logger.info(f"📊 Сигнал #{signal_id} оценён как {status_text}")
+                logger.info(f"📊 Пользователь {chat_id} оценил сигнал #{signal_id} как {status_text}")
             else:
                 await query.edit_message_text(f"⚠️ {msg}")
                 
@@ -516,6 +544,7 @@ class TelegramNotifier:
                 del self.pending_callbacks[query.message.message_id]
     
     async def run_bot(self):
+        """Запуск Telegram бота"""
         try:
             logger.info("🔄 Запускаем Telegram бота...")
             
@@ -541,13 +570,14 @@ class TelegramNotifier:
                 timeout=30
             )
             
-            logger.info("✅ Telegram бот запущен!")
+            logger.info("✅ Telegram бот запущен! Команды: /start, /stop, /pause, /resume, /result, /stats, /status, /help")
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Telegram бота: {e}")
             return False
     
     async def stop_bot(self):
+        """Остановка Telegram бота"""
         self.is_scanning = False
         self.is_paused = False
         if self.scan_task:
