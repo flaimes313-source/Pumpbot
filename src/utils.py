@@ -31,16 +31,8 @@ class SignalsHistory:
         self.history_file.parent.mkdir(exist_ok=True)
         self.data = self._load()
     
-    def _load(self):
-        if self.history_file.exists():
-            try:
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return self._default_data()
-        return self._default_data()
-    
     def _default_data(self):
+        """Возвращает структуру по умолчанию"""
         return {
             'signals': [],
             'stats': {
@@ -53,16 +45,68 @@ class SignalsHistory:
             }
         }
     
-    def _save(self):
+    def _ensure_file_exists(self):
+        """Принудительное создание файла, если его нет"""
+        if not self.history_file.exists():
+            logger.info("📁 Файл истории не найден, создаю новый...")
+            self.data = self._default_data()
+            self._save()
+            logger.info(f"✅ Файл истории создан: {self.history_file}")
+            return True
+        return False
+    
+    def _load(self):
+        """Загружает историю из файла"""
+        # Проверяем и создаём файл если нужно
+        self._ensure_file_exists()
+        
         try:
+            with open(self.history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+                # Проверяем наличие всех полей в stats
+                stats = data.get('stats', {})
+                default_stats = self._default_data()['stats']
+                
+                # Добавляем недостающие поля
+                need_update = False
+                for key in default_stats:
+                    if key not in stats:
+                        stats[key] = default_stats[key]
+                        need_update = True
+                
+                if need_update:
+                    data['stats'] = stats
+                    self._save(data)
+                    logger.info("✅ Структура файла истории обновлена")
+                
+                return data
+                
+        except Exception as e:
+            logger.error(f"Ошибка загрузки файла истории: {e}")
+            return self._default_data()
+    
+    def _save(self, data=None):
+        """Сохраняет историю в файл"""
+        try:
+            if data is None:
+                data = self.data
+            
             with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False, default=str)
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
             return True
         except Exception as e:
             logger.error(f"Ошибка сохранения истории: {e}")
             return False
     
     def add_signal(self, signal_data):
+        """
+        Добавляет новый сигнал в историю
+        signal_data: dict с данными сигнала
+        """
+        # Убеждаемся, что файл существует
+        self._ensure_file_exists()
+        
         signal_entry = {
             'id': len(self.data['signals']) + 1,
             'timestamp': datetime.now().isoformat(),
@@ -88,9 +132,13 @@ class SignalsHistory:
         return signal_entry['id']
     
     def update_signal_status(self, signal_id, status, comment=None):
+        """
+        Обновляет статус сигнала
+        status: 'confirmed', 'failed' или 'deleted'
+        """
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
-                # Если сигнал уже обработан
+                # Если сигнал уже обработан и это не удаление
                 if signal['status'] != 'pending' and status != 'deleted':
                     return False, "Сигнал уже обработан"
                 
@@ -138,18 +186,22 @@ class SignalsHistory:
         return False, "Сигнал не найден"
     
     def get_stats(self):
+        """Возвращает статистику"""
         return self.data['stats']
     
     def get_signal_by_id(self, signal_id):
+        """Возвращает сигнал по ID"""
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
                 return signal
         return None
     
     def get_recent_signals(self, limit=10):
+        """Возвращает последние N сигналов"""
         return self.data['signals'][-limit:][::-1]
     
     def get_stats_message(self):
+        """Формирует сообщение со статистикой"""
         stats = self.data['stats']
         total = stats['total'] - stats['deleted']
         
