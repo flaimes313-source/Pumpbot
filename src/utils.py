@@ -32,7 +32,6 @@ class SignalsHistory:
         self.data = self._load()
     
     def _load(self):
-        """Загружает историю из файла"""
         if self.history_file.exists():
             try:
                 with open(self.history_file, 'r', encoding='utf-8') as f:
@@ -42,20 +41,19 @@ class SignalsHistory:
         return self._default_data()
     
     def _default_data(self):
-        """Возвращает структуру по умолчанию"""
         return {
-            'signals': [],           # Все сигналы с результатами
+            'signals': [],
             'stats': {
                 'total': 0,
-                'confirmed': 0,      # Отработали (да)
-                'failed': 0,         # Не отработали (нет)
-                'pending': 0,        # Ожидают ответа
-                'accuracy': 0.0      # Точность в процентах
+                'confirmed': 0,
+                'failed': 0,
+                'pending': 0,
+                'deleted': 0,
+                'accuracy': 0.0
             }
         }
     
     def _save(self):
-        """Сохраняет историю в файл"""
         try:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False, default=str)
@@ -65,10 +63,6 @@ class SignalsHistory:
             return False
     
     def add_signal(self, signal_data):
-        """
-        Добавляет новый сигнал в историю
-        signal_data: dict с данными сигнала
-        """
         signal_entry = {
             'id': len(self.data['signals']) + 1,
             'timestamp': datetime.now().isoformat(),
@@ -82,7 +76,7 @@ class SignalsHistory:
             'volume_ratio': signal_data.get('volume_ratio', 0),
             'oi_change': signal_data.get('oi_change', 0),
             'resistance_gap': signal_data.get('resistance_gap', 0),
-            'status': 'pending',  # pending, confirmed, failed
+            'status': 'pending',
             'feedback_time': None,
             'feedback_comment': None
         }
@@ -94,32 +88,49 @@ class SignalsHistory:
         return signal_entry['id']
     
     def update_signal_status(self, signal_id, status, comment=None):
-        """
-        Обновляет статус сигнала
-        status: 'confirmed' или 'failed'
-        """
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
-                if signal['status'] != 'pending':
+                # Если сигнал уже обработан
+                if signal['status'] != 'pending' and status != 'deleted':
                     return False, "Сигнал уже обработан"
                 
+                old_status = signal['status']
                 signal['status'] = status
                 signal['feedback_time'] = datetime.now().isoformat()
                 signal['feedback_comment'] = comment
                 
                 # Обновляем статистику
-                self.data['stats']['pending'] -= 1
-                if status == 'confirmed':
-                    self.data['stats']['confirmed'] += 1
+                if status == 'deleted':
+                    # Удаляем из статистики
+                    if old_status == 'pending':
+                        self.data['stats']['pending'] -= 1
+                    elif old_status == 'confirmed':
+                        self.data['stats']['confirmed'] -= 1
+                    elif old_status == 'failed':
+                        self.data['stats']['failed'] -= 1
+                    self.data['stats']['deleted'] += 1
                 else:
-                    self.data['stats']['failed'] += 1
+                    # Меняем статус
+                    if old_status == 'pending':
+                        self.data['stats']['pending'] -= 1
+                    elif old_status == 'confirmed':
+                        self.data['stats']['confirmed'] -= 1
+                    elif old_status == 'failed':
+                        self.data['stats']['failed'] -= 1
+                    
+                    if status == 'confirmed':
+                        self.data['stats']['confirmed'] += 1
+                    elif status == 'failed':
+                        self.data['stats']['failed'] += 1
                 
-                # Пересчитываем точность
+                # Пересчитываем точность (только для confirmed и failed)
                 total_answered = self.data['stats']['confirmed'] + self.data['stats']['failed']
                 if total_answered > 0:
                     self.data['stats']['accuracy'] = round(
                         (self.data['stats']['confirmed'] / total_answered) * 100, 1
                     )
+                else:
+                    self.data['stats']['accuracy'] = 0.0
                 
                 self._save()
                 return True, "Статус обновлён"
@@ -127,24 +138,20 @@ class SignalsHistory:
         return False, "Сигнал не найден"
     
     def get_stats(self):
-        """Возвращает статистику"""
         return self.data['stats']
     
     def get_signal_by_id(self, signal_id):
-        """Возвращает сигнал по ID"""
         for signal in self.data['signals']:
             if signal['id'] == signal_id:
                 return signal
         return None
     
     def get_recent_signals(self, limit=10):
-        """Возвращает последние N сигналов"""
         return self.data['signals'][-limit:][::-1]
     
     def get_stats_message(self):
-        """Формирует сообщение со статистикой"""
         stats = self.data['stats']
-        total = stats['total']
+        total = stats['total'] - stats['deleted']
         
         if total == 0:
             return "📊 <b>Статистика сигналов</b>\n\nПока нет данных."
@@ -152,9 +159,9 @@ class SignalsHistory:
         confirmed = stats['confirmed']
         failed = stats['failed']
         pending = stats['pending']
+        deleted = stats['deleted']
         accuracy = stats['accuracy']
         
-        # Определяем эмодзи для точности
         if accuracy >= 70:
             accuracy_emoji = "🟢"
         elif accuracy >= 50:
@@ -169,6 +176,7 @@ class SignalsHistory:
 ✅ <b>Отработали:</b> {confirmed}
 ❌ <b>Не отработали:</b> {failed}
 ⏳ <b>Ожидают ответа:</b> {pending}
+🗑️ <b>Удалено:</b> {deleted}
 
 🎯 <b>Точность:</b> {accuracy_emoji} {accuracy}%
 
