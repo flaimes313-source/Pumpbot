@@ -17,6 +17,7 @@ class BybitClient:
         self.all_symbols = []
         self.spot_symbols = []
         self.linear_symbols = []
+        self._symbols_loaded = False  # Флаг, что символы уже загружены
         logger.info("Bybit клиент инициализирован")
     
     def _make_request(self, endpoint, params=None, max_retries=3):
@@ -28,7 +29,6 @@ class BybitClient:
                 url = f"{self.BASE_URL}{endpoint}"
                 response = self.session.get(url, params=params, timeout=15)
                 
-                # Для 404 ошибки не повторяем
                 if response.status_code == 404:
                     logger.debug(f"ℹ️ Эндпоинт не найден: {endpoint}")
                     return None
@@ -61,11 +61,20 @@ class BybitClient:
         
         return None
     
-    def load_all_symbols(self):
-        """Загружает все USDT пары"""
+    def load_all_symbols(self, force_reload=False):
+        """
+        Загружает все USDT пары с кешированием
+        force_reload=True — принудительная перезагрузка
+        """
+        # Если символы уже загружены и не требуется перезагрузка — возвращаем кеш
+        if self._symbols_loaded and not force_reload:
+            logger.debug(f"📦 Используем кеш символов: {len(self.all_symbols)} монет")
+            return self.all_symbols
+        
         logger.info("Загрузка торговых пар с Bybit...")
         
         try:
+            # 1. Загружаем спотовые пары
             spot_resp = self._make_request("/v5/market/instruments-info", {"category": "spot", "limit": 1000})
             if spot_resp:
                 self.spot_symbols = [
@@ -75,6 +84,7 @@ class BybitClient:
                 ]
                 logger.info(f"✅ Загружено {len(self.spot_symbols)} спотовых пар")
             
+            # 2. Загружаем фьючерсные пары (Linear)
             linear_resp = self._make_request("/v5/market/instruments-info", {"category": "linear", "limit": 1000})
             if linear_resp:
                 self.linear_symbols = [
@@ -84,15 +94,19 @@ class BybitClient:
                 ]
                 logger.info(f"✅ Загружено {len(self.linear_symbols)} фьючерсных пар")
             
+            # 3. Находим пересечение (монеты есть и на споте, и на фьючерсах)
             spot_set = set(self.spot_symbols)
             linear_set = set(self.linear_symbols)
             self.all_symbols = list(spot_set.intersection(linear_set))
             
             if not self.all_symbols:
+                logger.warning("⚠️ Не найдено общих пар между спотом и фьючерсами")
                 return self._get_fallback_symbols()
             
+            # Сортируем по объёму
             self.all_symbols = self._sort_by_volume(self.all_symbols)
-            logger.info(f"✅ Найдено {len(self.all_symbols)} монет")
+            self._symbols_loaded = True  # Отмечаем, что символы загружены
+            logger.info(f"✅ Найдено {len(self.all_symbols)} монет (кешировано)")
             return self.all_symbols
             
         except Exception as e:
@@ -100,11 +114,13 @@ class BybitClient:
             return self._get_fallback_symbols()
     
     def _get_fallback_symbols(self):
+        """Возвращает резервный список популярных монет"""
         fallback = ['DOGEUSDT', 'SHIBUSDT', 'PEPEUSDT', 'WIFUSDT', 'MEMEUSDT']
         logger.info(f"🔧 Резервный список: {fallback}")
         return fallback
     
     def _sort_by_volume(self, symbols):
+        """Сортировка по 24h объёму"""
         volumes = {}
         for symbol in symbols[:100]:
             try:
@@ -118,18 +134,20 @@ class BybitClient:
         return sorted(volumes.keys(), key=lambda x: volumes.get(x, 0), reverse=True)
     
     def _convert_timestamp(self, timestamp):
-        """Безопасное преобразование timestamp"""
+        """Безопасное преобразование timestamp в datetime"""
         try:
             if isinstance(timestamp, str):
                 ts = int(timestamp)
             else:
                 ts = int(timestamp)
             
+            # Если timestamp в миллисекундах (13 цифр), делим на 1000
             if ts > 1000000000000:
                 ts = ts / 1000
             
             return pd.to_datetime(ts, unit='s')
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка преобразования timestamp: {e}")
             return pd.NaT
     
     def get_klines(self, symbol, interval='5', limit=200):
@@ -147,12 +165,18 @@ class BybitClient:
                 df = pd.DataFrame(rows, columns=[
                     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'
                 ])
+                
+                # Безопасное преобразование timestamp
                 df['timestamp'] = df['timestamp'].apply(self._convert_timestamp)
                 df['close'] = df['close'].astype(float)
                 df['high'] = df['high'].astype(float)
                 df['low'] = df['low'].astype(float)
                 df['volume'] = df['volume'].astype(float)
                 return df
+            else:
+                logger.warning(f"⚠️ Нет данных для {symbol}")
+                return pd.DataFrame()
+                
         except Exception as e:
             logger.error(f"❌ Ошибка получения свечей {symbol}: {e}")
         return pd.DataFrame()
@@ -189,9 +213,8 @@ class BybitClient:
         return pd.DataFrame()
     
     def get_funding_history(self, symbol, limit=30):
-        """История ставок финансирования (если доступно)"""
+        """История ставок финансирования"""
         try:
-            # Пробуем получить историю funding
             data = self._make_request("/v5/market/funding-rate-history", {
                 "category": "linear",
                 "symbol": symbol,
@@ -224,7 +247,7 @@ class BybitClient:
         return {'bids': [], 'asks': []}
     
     def get_liquidations(self, symbol, limit=100):
-        """Получение ликвидаций (если доступно)"""
+        """Получение ликвидаций"""
         try:
             data = self._make_request("/v5/market/liq-records", {
                 "category": "linear",
@@ -251,6 +274,7 @@ class BybitClient:
         return {'total': 0, 'long': 0, 'short': 0}
     
     def get_current_price(self, symbol):
+        """Текущая цена"""
         try:
             data = self._make_request("/v5/market/tickers", {"category": "linear", "symbol": symbol})
             if data and data['result']['list']:
@@ -260,6 +284,7 @@ class BybitClient:
         return 0.0
     
     def get_24h_volume_usd(self, symbol):
+        """24h объём фьючерсов в USD"""
         try:
             data = self._make_request("/v5/market/tickers", {"category": "linear", "symbol": symbol})
             if data and data['result']['list']:
