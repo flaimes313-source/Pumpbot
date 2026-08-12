@@ -34,7 +34,6 @@ async def main():
                 symbols_to_watch = symbols[:config.MAX_SYMBOLS]
                 logger.info(f"📊 Загружено {len(symbols_to_watch)} символов для WebSocket")
                 
-                # Запускаем TradeStream с защитой от ошибок
                 try:
                     asyncio.create_task(trade_stream.connect(symbols_to_watch))
                     logger.info(f"✅ TradeStream запущен для {len(symbols_to_watch)} символов")
@@ -59,13 +58,15 @@ async def main():
         logger.info(f"🎯 Порог Стадии 1: 50/130")
         logger.info(f"🎯 Порог Стадии 2: 70/130")
         logger.info("="*50)
-        logger.info("📊 <b>НОВЫЕ УЛУЧШЕНИЯ:</b>")
+        logger.info("📊 НОВЫЕ УЛУЧШЕНИЯ:")
         logger.info("   ✅ Реальный Trade Count (WebSocket)")
         logger.info("   ✅ Асинхронное сканирование (asyncio.gather)")
         logger.info("   ✅ Динамические пороги (на основе ATR)")
         logger.info("   ✅ Команда /pause (поставить на паузу)")
-        logger.info("   ✅ Автоматическое переподключение WebSocket")
-        logger.info("   ✅ Режим эмуляции при недоступности WebSocket")
+        logger.info("   ✅ Команда /result (результаты сканирования)")
+        logger.info("   ✅ Кнопки обратной связи по сигналам")
+        logger.info("   ✅ Статистика отработок /stats")
+        logger.info("   ✅ Команды работают ВО ВРЕМЯ сканирования!")
         logger.info("="*50)
         logger.info("🤖 Бот запущен!")
         logger.info("📱 Команды в Telegram:")
@@ -73,6 +74,8 @@ async def main():
         logger.info("   /stop    - Остановить сканирование")
         logger.info("   /pause   - Поставить на паузу")
         logger.info("   /resume  - Возобновить работу")
+        logger.info("   /result  - Результаты последнего сканирования")
+        logger.info("   /stats   - Статистика сигналов")
         logger.info("   /status  - Статус бота")
         logger.info("   /help    - Помощь")
         logger.info("="*50)
@@ -80,7 +83,7 @@ async def main():
         # Запускаем Telegram бота
         await notifier.run_bot()
         
-        # Основной цикл сканирования
+        # Основной цикл — теперь асинхронный!
         logger.info("⏳ Ожидание команд из Telegram...")
         while True:
             try:
@@ -93,20 +96,20 @@ async def main():
                 if not notifier.is_paused and detector:
                     logger.info("🔍 Начинаем асинхронное сканирование...")
                     
-                    # Используем асинхронное сканирование
+                    # Асинхронное сканирование — не блокирует команды!
                     if hasattr(detector, 'scan_all_symbols_async'):
                         signals = await detector.scan_all_symbols_async()
                     else:
-                        signals = detector.scan_all_symbols()
+                        # Если асинхронного метода нет — используем синхронный в отдельном потоке
+                        signals = await asyncio.to_thread(detector.scan_all_symbols)
                     
                     if signals:
                         await notifier.send_top_signals(signals)
                         logger.info(f"✅ Отправлено {len(signals)} сигналов")
                     else:
-                        await notifier.send_scan_status(0)
-                        logger.info("ℹ️ Сигналов не найдено")
+                        logger.info("ℹ️ Сигналов не найдено (тишина)")
                 
-                # Ждём до следующего сканирования
+                # Ждём до следующего сканирования с возможностью прерывания
                 for _ in range(config.CHECK_INTERVAL):
                     if not notifier.is_scanning or notifier.is_paused:
                         break
