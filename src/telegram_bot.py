@@ -19,27 +19,46 @@ class TelegramNotifier:
         self.is_paused = False
         self.scan_task = None
         self.detector = None
-        self.last_signals = []  # Храним последние сигналы
-        self.last_scan_time = None  # Время последнего сканирования
-        self.pending_callbacks = {}  # Для отслеживания обработки кнопок
+        self.last_signals = []
+        self.last_scan_time = None
+        self.pending_callbacks = {}
+        self.subscribed_users = set()  # ← СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ
         logger.info("Telegram бот инициализирован")
     
     def set_detector(self, detector):
         self.detector = detector
     
     def _get_chat_id(self, update: Update):
-        """Получает chat_id из обновления"""
         if update.callback_query:
             return update.callback_query.message.chat_id
         elif update.message:
             return update.message.chat_id
         return None
     
+    def _add_user(self, chat_id):
+        """Добавляет пользователя в список подписанных"""
+        if chat_id not in self.subscribed_users:
+            self.subscribed_users.add(chat_id)
+            logger.info(f"✅ Пользователь {chat_id} подписан на сигналы")
+            return True
+        return False
+    
+    def _remove_user(self, chat_id):
+        """Удаляет пользователя из списка подписанных"""
+        if chat_id in self.subscribed_users:
+            self.subscribed_users.remove(chat_id)
+            logger.info(f"❌ Пользователь {chat_id} отписан от сигналов")
+            return True
+        return False
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /start - запускает сканирование"""
+        """Команда /start - запускает сканирование и подписывает на сигналы"""
         user = update.effective_user
         user_name = user.first_name if user.first_name else "Пользователь"
         chat_id = update.message.chat_id
+        
+        # Добавляем пользователя в список
+        self._add_user(chat_id)
         
         if self.is_scanning:
             status_text = "⏸️ НА ПАУЗЕ" if self.is_paused else "✅ АКТИВЕН"
@@ -55,7 +74,7 @@ class TelegramNotifier:
                 f"🟢 LONG — памп вверх\n"
                 f"🔴 SHORT — дамп вниз\n\n"
                 f"📱 Команды:\n"
-                f"/start - Запустить/проверить статус\n"
+                f"/start - Запустить/подписаться\n"
                 f"/stop - Остановить сканирование\n"
                 f"/pause - Поставить на паузу\n"
                 f"/resume - Возобновить работу\n"
@@ -79,31 +98,21 @@ class TelegramNotifier:
             f"• Максимум монет: {config.MAX_SYMBOLS}\n\n"
             f"📊 <b>Двухстадийная система:</b>\n"
             f"🟡 Стадия 1 — Раннее предупреждение\n"
-            f"   Объём и OI растут, цена ещё не ушла\n"
-            f"🟢 Стадия 2 — Памп/Дамп подтвержден\n"
-            f"   Цена пробила, движение подтверждено\n\n"
-            f"🎯 <b>Направление:</b>\n"
-            f"🟢 LONG — памп вверх\n"
-            f"🔴 SHORT — дамп вниз\n\n"
-            f"📊 <b>Новые улучшения:</b>\n"
-            f"✅ Реальный Trade Count (WebSocket)\n"
-            f"✅ Динамические пороги (на основе ATR)\n"
-            f"✅ Команда /pause для паузы\n"
-            f"✅ Кнопки обратной связи по сигналам\n"
-            f"✅ Статистика отработок /stats\n"
-            f"✅ Индивидуальная статистика для каждого пользователя\n\n"
+            f"🟢 Стадия 2 — Памп/Дамп подтвержден\n\n"
+            f"✅ Вы подписаны на сигналы!\n"
             f"✅ Сканирование запущено!",
             parse_mode='HTML'
         )
         
-        # Устанавливаем пользователя в истории
         signals_history.set_user(chat_id)
         
         if self.detector:
             self.scan_task = asyncio.create_task(self._run_scanning())
     
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /stop - останавливает сканирование"""
+        """Команда /stop - останавливает сканирование и отписывает"""
+        chat_id = update.message.chat_id
+        
         if not self.is_scanning:
             await update.message.reply_text("⚠️ Сканирование уже остановлено.")
             return
@@ -117,6 +126,9 @@ class TelegramNotifier:
         if self.detector:
             self.detector.resume()
         
+        # Очищаем список пользователей при полной остановке
+        self.subscribed_users.clear()
+        
         await update.message.reply_text(
             "🛑 <b>Сканирование ОСТАНОВЛЕНО!</b>\n\n"
             "Для запуска используйте /start",
@@ -124,75 +136,54 @@ class TelegramNotifier:
         )
         logger.info("⏹️ Сканирование остановлено по команде /stop")
     
-    async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /pause - поставить сканирование на паузу"""
-        if not self.is_scanning:
-            await update.message.reply_text(
-                "⚠️ Сканирование не запущено.\n"
-                "Используйте /start для запуска.",
-                parse_mode='HTML'
+    async def send_message_to_user(self, chat_id, text, silent=False, reply_markup=None):
+        """Отправка сообщения конкретному пользователю"""
+        try:
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='HTML',
+                disable_web_page_preview=True,
+                disable_notification=silent,
+                reply_markup=reply_markup
             )
-            return
-        
-        if self.is_paused:
-            await update.message.reply_text(
-                "⏸️ Сканирование УЖЕ на паузе.\n"
-                "Для возобновления используйте /resume",
-                parse_mode='HTML'
-            )
-            return
-        
-        self.is_paused = True
-        if self.detector:
-            self.detector.pause()
-        
-        await update.message.reply_text(
-            "⏸️ <b>Сканирование поставлено на ПАУЗУ!</b>\n\n"
-            "🔄 Бот активен, но не сканирует рынок.\n"
-            "▶️ Для возобновления используйте /resume",
-            parse_mode='HTML'
-        )
-        logger.info("⏸️ Сканирование поставлено на паузу по команде /pause")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки пользователю {chat_id}: {e}")
+            return False
     
-    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /resume - возобновить сканирование"""
-        if not self.is_scanning:
-            await update.message.reply_text(
-                "⚠️ Сканирование остановлено.\n"
-                "Используйте /start для запуска.",
-                parse_mode='HTML'
-            )
-            return
+    async def broadcast_message(self, text, silent=False, reply_markup=None):
+        """Отправка сообщения ВСЕМ подписанным пользователям"""
+        if not self.subscribed_users:
+            logger.warning("⚠️ Нет подписанных пользователей")
+            return False
         
-        if not self.is_paused:
-            await update.message.reply_text(
-                "▶️ Сканирование УЖЕ активно.\n"
-                "Для остановки используйте /stop или /pause",
-                parse_mode='HTML'
-            )
-            return
+        success_count = 0
+        for chat_id in self.subscribed_users:
+            try:
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode='HTML',
+                    disable_web_page_preview=True,
+                    disable_notification=silent,
+                    reply_markup=reply_markup
+                )
+                success_count += 1
+                await asyncio.sleep(0.3)  # Небольшая задержка между отправками
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки пользователю {chat_id}: {e}")
         
-        self.is_paused = False
-        if self.detector:
-            self.detector.resume()
-        
-        await update.message.reply_text(
-            "▶️ <b>Сканирование ВОЗОБНОВЛЕНО!</b>\n\n"
-            "🔍 Бот снова сканирует рынок...",
-            parse_mode='HTML'
-        )
-        logger.info("▶️ Сканирование возобновлено по команде /resume")
+        logger.info(f"✅ Сообщение отправлено {success_count} пользователям")
+        return success_count > 0
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /stats - показывает статистику сигналов"""
         chat_id = update.message.chat_id
         signals_history.set_user(chat_id)
         stats_message = signals_history.get_stats_message()
         await update.message.reply_text(stats_message, parse_mode='HTML')
     
     async def result_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /result - показывает результаты последнего сканирования"""
-        
         if self.last_scan_time is None:
             await update.message.reply_text(
                 "📊 <b>Результаты сканирования</b>\n\n"
@@ -253,7 +244,6 @@ class TelegramNotifier:
         await update.message.reply_text(message, parse_mode='HTML')
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /status - показывает статус"""
         if not self.is_scanning:
             status_text = "⏹️ ОСТАНОВЛЕН"
         elif self.is_paused:
@@ -263,11 +253,13 @@ class TelegramNotifier:
         
         last_scan = self.last_scan_time.strftime('%H:%M:%S') if self.last_scan_time else "Не было"
         signals_count = len(self.last_signals) if self.last_signals else 0
+        users_count = len(self.subscribed_users)
         
         await update.message.reply_text(
             f"📊 <b>СТАТУС БОТА</b>\n"
             f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
             f"📈 Статус сканирования: {status_text}\n"
+            f"👥 Подписанных пользователей: {users_count}\n"
             f"⏱️ Интервал: {config.CHECK_INTERVAL} сек\n"
             f"🎯 Порог Стадии 1: 50/130\n"
             f"🎯 Порог Стадии 2: 70/130\n"
@@ -276,8 +268,8 @@ class TelegramNotifier:
             f"🕐 Время: {last_scan}\n"
             f"📈 Найдено сигналов: <b>{signals_count}</b>\n\n"
             f"📱 Команды:\n"
-            f"/start - Запустить\n"
-            f"/stop - Остановить\n"
+            f"/start - Запустить/подписаться\n"
+            f"/stop - Остановить сканирование\n"
             f"/pause - Поставить на паузу\n"
             f"/resume - Возобновить\n"
             f"/result - Результаты последнего сканирования\n"
@@ -288,50 +280,34 @@ class TelegramNotifier:
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /help - показывает помощь"""
         await update.message.reply_text(
             "❓ <b>ПОМОЩЬ</b>\n\n"
             "📌 <b>Что делает бот?</b>\n"
             "Сканирует Bybit и ищет пампы (LONG) и дампы (SHORT).\n\n"
             "📌 <b>Двухстадийная система:</b>\n"
-            "🟡 <b>Стадия 1 — Раннее предупреждение</b>\n"
-            "• Объём и OI растут\n"
-            "• Цена ещё не ушла (< 2%)\n"
-            "• Появляются агрессивные покупки/продажи\n"
-            "• Баллы: 50-69\n\n"
-            "🟢 <b>Стадия 2 — Памп/Дамп подтвержден</b>\n"
-            "• Цена пробила (> 2%)\n"
-            "• Объём высокий (> 2x)\n"
-            "• OI растёт (> 5%)\n"
-            "• Все индикаторы подтверждают\n"
-            "• Баллы: 70+\n\n"
+            "🟡 Стадия 1 — Раннее предупреждение (50-69 баллов)\n"
+            "🟢 Стадия 2 — Памп/Дамп подтвержден (70+ баллов)\n\n"
             "📌 <b>Направление:</b>\n"
-            "🟢 <b>LONG</b> — памп вверх (бычий сигнал)\n"
-            "🔴 <b>SHORT</b> — дамп вниз (медвежий сигнал)\n\n"
+            "🟢 LONG — памп вверх\n"
+            "🔴 SHORT — дамп вниз\n\n"
             "📌 <b>Обратная связь:</b>\n"
             "У каждого сигнала есть кнопки:\n"
-            "✅ <b>Отработал</b> — сигнал сработал\n"
-            "❌ <b>Не отработал</b> — сигнал не сработал\n"
-            "🗑️ <b>Удалить</b> — удалить сигнал из статистики\n\n"
-            "📌 <b>Индивидуальная статистика:</b>\n"
-            "У каждого пользователя своя статистика сигналов.\n"
-            "Ваши оценки не влияют на оценки других пользователей.\n\n"
+            "✅ Отработал\n"
+            "❌ Не отработал\n"
+            "🗑️ Удалить\n\n"
             "📌 <b>Команды:</b>\n"
-            "/start  - Запустить сканирование\n"
+            "/start  - Запустить/подписаться на сигналы\n"
             "/stop   - Остановить сканирование\n"
             "/pause  - Поставить на паузу\n"
             "/resume - Возобновить работу\n"
             "/result - Результаты последнего сканирования\n"
             "/stats  - Статистика сигналов\n"
             "/status - Показать статус\n"
-            "/help   - Эта справка\n\n"
-            "⚠️ <i>Торговля криптовалютами связана с высоким риском.\n"
-            "Все решения принимайте на свой страх и риск.</i>",
+            "/help   - Эта справка",
             parse_mode='HTML'
         )
     
     async def _run_scanning(self):
-        """Фоновое сканирование"""
         logger.info("🔄 Запущено фоновое сканирование")
         
         while self.is_scanning and self.detector:
@@ -349,11 +325,12 @@ class TelegramNotifier:
                 
                 self.last_signals = signals if signals else []
                 self.last_scan_time = datetime.now()
-                logger.info(f"📊 Сохранено {len(self.last_signals)} сигналов, время: {self.last_scan_time.strftime('%H:%M:%S')}")
+                logger.info(f"📊 Сохранено {len(self.last_signals)} сигналов")
                 
                 if signals:
-                    await self.send_top_signals(signals)
-                    logger.info(f"✅ Отправлено {len(signals)} сигналов")
+                    # Отправляем сигналы ВСЕМ подписанным пользователям
+                    await self.broadcast_signals(signals)
+                    logger.info(f"✅ Отправлено {len(signals)} сигналов всем пользователям")
                 else:
                     logger.info("ℹ️ Сигналов не найдено (тишина)")
                 
@@ -371,74 +348,86 @@ class TelegramNotifier:
         
         logger.info("⏹️ Фоновое сканирование завершено")
     
-    async def send_message(self, text, silent=False, reply_markup=None):
-        """Отправка сообщения"""
-        try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=text,
-                parse_mode='HTML',
-                disable_web_page_preview=True,
-                disable_notification=silent,
-                reply_markup=reply_markup
-            )
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки: {e}")
-            return False
-    
-    async def send_top_signals(self, signals):
-        """Отправка сигналов (СО ЗВУКОМ) с кнопками обратной связи"""
+    async def broadcast_signals(self, signals):
+        """Отправка сигналов ВСЕМ подписанным пользователям"""
         for signal in signals[:config.TOP_SIGNALS]:
-            # Используем chat_id главного пользователя для сохранения истории
-            chat_id = self.chat_id
-            signals_history.set_user(chat_id)
-            signal_id = signals_history.add_signal(signal)
+            # Сохраняем сигнал для каждого пользователя
+            signal_data = signal.copy()
             
-            stage_emoji = "🟢" if signal.get('stage', 0) == 2 else "🟡"
-            stage_text = signal.get('stage_message', '')
+            # Формируем сообщение
+            message = self._format_signal_message(signal)
             
-            direction = signal.get('direction', 'NEUTRAL')
+            # Отправляем всем пользователям
+            for chat_id in self.subscribed_users:
+                # Сохраняем историю для каждого пользователя
+                signals_history.set_user(chat_id)
+                signal_id = signals_history.add_signal(signal_data)
+                
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Отработал", callback_data=f"confirm_{signal_id}"),
+                        InlineKeyboardButton("❌ Не отработал", callback_data=f"fail_{signal_id}"),
+                        InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{signal_id}")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await self.send_message_to_user(
+                    chat_id,
+                    message,
+                    silent=False,
+                    reply_markup=reply_markup
+                )
+                await asyncio.sleep(0.3)
+    
+    def _format_signal_message(self, signal):
+        """Форматирует сообщение с сигналом"""
+        stage_emoji = "🟢" if signal.get('stage', 0) == 2 else "🟡"
+        stage_text = signal.get('stage_message', '')
+        
+        direction = signal.get('direction', 'NEUTRAL')
+        if direction == "LONG":
+            direction_emoji = "🟢"
+            direction_text = "LONG (памп вверх)"
+        elif direction == "SHORT":
+            direction_emoji = "🔴"
+            direction_text = "SHORT (дамп вниз)"
+        else:
+            direction_emoji = "⚪"
+            direction_text = "NEUTRAL"
+        
+        if signal['score'] >= 80:
+            prob = "🔴 ВЫСОКАЯ"
+            star = "⭐"
+        elif signal['score'] >= 65:
+            prob = "🟡 СРЕДНЯЯ"
+            star = "🌟"
+        else:
+            prob = "🟢 НИЗКАЯ"
+            star = "💫"
+        
+        synergy_text = "✅" if signal.get('synergy', False) else "❌"
+        trade_text = f"{signal.get('trade_growth', 1):.1f}x" if signal.get('trade_growth') else "Н/Д"
+        
+        stage_info = ""
+        if signal.get('stage', 0) == 1:
             if direction == "LONG":
-                direction_emoji = "🟢"
-                direction_text = "LONG (памп вверх)"
+                stage_info = "📌 Объём и OI растут, цена готовится к пробою ВВЕРХ"
             elif direction == "SHORT":
-                direction_emoji = "🔴"
-                direction_text = "SHORT (дамп вниз)"
+                stage_info = "📌 Объём и OI растут, цена готовится к пробою ВНИЗ"
             else:
-                direction_emoji = "⚪"
-                direction_text = "NEUTRAL"
-            
-            if signal['score'] >= 80:
-                prob = "🔴 ВЫСОКАЯ"
-                star = "⭐"
-            elif signal['score'] >= 65:
-                prob = "🟡 СРЕДНЯЯ"
-                star = "🌟"
+                stage_info = "📌 Объём и OI растут, направление уточняется"
+        elif signal.get('stage', 0) == 2:
+            if direction == "LONG":
+                stage_info = "📌 ПАМП ПОДТВЕРЖДЕН! Движение вверх 🚀"
+            elif direction == "SHORT":
+                stage_info = "📌 ДАМП ПОДТВЕРЖДЕН! Движение вниз 💥"
             else:
-                prob = "🟢 НИЗКАЯ"
-                star = "💫"
-            
-            synergy_text = "✅" if signal.get('synergy', False) else "❌"
-            trade_text = f"{signal.get('trade_growth', 1):.1f}x" if signal.get('trade_growth') else "Н/Д"
-            
-            stage_info = ""
-            if signal.get('stage', 0) == 1:
-                if direction == "LONG":
-                    stage_info = "📌 Объём и OI растут, цена готовится к пробою ВВЕРХ"
-                elif direction == "SHORT":
-                    stage_info = "📌 Объём и OI растут, цена готовится к пробою ВНИЗ"
-                else:
-                    stage_info = "📌 Объём и OI растут, направление уточняется"
-            elif signal.get('stage', 0) == 2:
-                if direction == "LONG":
-                    stage_info = "📌 ПАМП ПОДТВЕРЖДЕН! Движение вверх 🚀"
-                elif direction == "SHORT":
-                    stage_info = "📌 ДАМП ПОДТВЕРЖДЕН! Движение вниз 💥"
-                else:
-                    stage_info = "📌 Движение подтверждено, направление уточняется"
-            
-            message = f"""
+                stage_info = "📌 Движение подтверждено, направление уточняется"
+        
+        return f"""
+🔔🔊 <b>ВНИМАНИЕ! ОБНАРУЖЕН СИГНАЛ!</b>
+
 {stage_emoji} <b>{signal['symbol']}</b> — {stage_text}
 ┌─────────────────────────────────────
 │ 📊 Рейтинг: <b>{signal['score']}/130</b> | {prob} | {star}
@@ -455,29 +444,13 @@ class TelegramNotifier:
 │ 📌 {stage_info}
 └─────────────────────────────────────
 
-🆔 Сигнал #{signal_id}
-
 📌 <b>Оцените сигнал:</b>
 """
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Отработал", callback_data=f"confirm_{signal_id}"),
-                    InlineKeyboardButton("❌ Не отработал", callback_data=f"fail_{signal_id}"),
-                    InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{signal_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await self.send_message(message, silent=False, reply_markup=reply_markup)
-            await asyncio.sleep(0.5)
     
     async def handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка нажатия на кнопки обратной связи"""
         query = update.callback_query
         chat_id = query.message.chat_id
         
-        # Устанавливаем пользователя в истории
         signals_history.set_user(chat_id)
         
         if query.message.message_id in self.pending_callbacks:
@@ -544,7 +517,6 @@ class TelegramNotifier:
                 del self.pending_callbacks[query.message.message_id]
     
     async def run_bot(self):
-        """Запуск Telegram бота"""
         try:
             logger.info("🔄 Запускаем Telegram бота...")
             
@@ -570,14 +542,13 @@ class TelegramNotifier:
                 timeout=30
             )
             
-            logger.info("✅ Telegram бот запущен! Команды: /start, /stop, /pause, /resume, /result, /stats, /status, /help")
+            logger.info("✅ Telegram бот запущен!")
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Telegram бота: {e}")
             return False
     
     async def stop_bot(self):
-        """Остановка Telegram бота"""
         self.is_scanning = False
         self.is_paused = False
         if self.scan_task:
