@@ -7,17 +7,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from src.detector import PumpDetector
 from src.telegram_bot import TelegramNotifier
-from src.utils import setup_logging, SubscribersManager
+from src.utils import setup_logging, subscribers_manager
 from src.trade_stream import trade_stream
 
 logger = setup_logging()
-
-# ============================================================
-# ИНИЦИАЛИЗИРУЕМ subscribers_manager (СИНГЛТОН)
-# ============================================================
-# Это создаст экземпляр, если его ещё нет, или вернёт существующий
-subscribers_manager = SubscribersManager(admin_chat_id=config.TELEGRAM_CHAT_ID)
-# ============================================================
 
 async def main():
     """Запуск бота"""
@@ -25,10 +18,8 @@ async def main():
         config.validate()
         logger.info("✅ Настройки проверены успешно")
         
-        # Создаём детектор и нотификатор
         detector = PumpDetector()
         notifier = TelegramNotifier()
-        
         notifier.set_detector(detector)
         
         # Загружаем символы для WebSocket
@@ -63,7 +54,7 @@ async def main():
         logger.info(f"🎯 Порог Стадии 1: 50/130")
         logger.info(f"🎯 Порог Стадии 2: 70/130")
         logger.info("="*50)
-        logger.info("📊 <b>НОВЫЕ УЛУЧШЕНИЯ:</b>")
+        logger.info("📊 НОВЫЕ УЛУЧШЕНИЯ:")
         logger.info("   ✅ Реальный Trade Count (WebSocket)")
         logger.info("   ✅ Асинхронное сканирование (asyncio.gather)")
         logger.info("   ✅ Динамические пороги (на основе ATR)")
@@ -73,7 +64,7 @@ async def main():
         logger.info("   ✅ Статистика отработок /stats")
         logger.info("   ✅ Админ-панель с кнопками")
         logger.info("   ✅ Автоблокировка новых пользователей")
-        logger.info("   ✅ Администратор добавляется автоматически")
+        logger.info("   ✅ Администратор добавляется автоматиicamente")
         logger.info("   ✅ Подписчики сохраняются между перезапусками")
         logger.info("="*50)
         logger.info("🤖 Бот запущен!")

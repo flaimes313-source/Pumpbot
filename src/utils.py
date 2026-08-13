@@ -256,7 +256,6 @@ class SubscribersManager:
         return cls._instance
     
     def __init__(self, admin_chat_id=None):
-        # Проверяем, был ли уже инициализирован
         if hasattr(self, '_initialized'):
             return
         
@@ -270,7 +269,6 @@ class SubscribersManager:
         logger.info(f"📊 SubscribersManager инициализирован, загружено {len(self.subscribers)} подписчиков")
     
     def _ensure_admin_exists(self):
-        """Автоматически добавляет администратора в список подписчиков при запуске"""
         if self.admin_chat_id is None:
             return
         
@@ -296,7 +294,6 @@ class SubscribersManager:
                 logger.info(f"🔓 Администратор {self.admin_chat_id} разблокирован")
     
     def _load(self):
-        """Загружает подписчиков из файла"""
         if self.subscribers_file.exists():
             try:
                 with open(self.subscribers_file, 'r', encoding='utf-8') as f:
@@ -311,7 +308,6 @@ class SubscribersManager:
         self._save()
     
     def _save(self):
-        """Сохраняет подписчиков в файл"""
         try:
             data = {
                 'users': self.subscribers,
@@ -326,7 +322,6 @@ class SubscribersManager:
             return False
     
     def add_subscriber(self, chat_id, username=None, first_name=None, last_name=None):
-        """Добавляет подписчика"""
         chat_id_str = str(chat_id)
         
         if chat_id_str in self.subscribers:
@@ -352,7 +347,6 @@ class SubscribersManager:
         return True
     
     def remove_subscriber(self, chat_id):
-        """Удаляет подписчика"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             del self.subscribers[chat_id_str]
@@ -362,7 +356,6 @@ class SubscribersManager:
         return False
     
     def block_subscriber(self, chat_id):
-        """Блокирует подписчика (временно)"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             self.subscribers[chat_id_str]['is_blocked'] = True
@@ -372,7 +365,6 @@ class SubscribersManager:
         return False
     
     def unblock_subscriber(self, chat_id):
-        """Разблокирует подписчика"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             self.subscribers[chat_id_str]['is_blocked'] = False
@@ -397,14 +389,12 @@ class SubscribersManager:
         return True
     
     def get_subscribers_list(self):
-        """Возвращает список chat_id только НЕ ЗАБЛОКИРОВАННЫХ подписчиков"""
         return [
             int(chat_id) for chat_id, data in self.subscribers.items()
             if not data.get('is_blocked', False)
         ]
     
     def get_all_subscribers_list(self):
-        """Возвращает список chat_id ВСЕХ подписчиков (включая заблокированных)"""
         return [int(chat_id) for chat_id in self.subscribers.keys()]
     
     def clear_all(self):
@@ -413,6 +403,16 @@ class SubscribersManager:
         logger.info("🗑️ Все подписчики удалены")
 
 
+# ============================================================
 # Глобальные экземпляры
+# ============================================================
 signals_history = SignalsHistory()
-subscribers_manager = None  # Будет инициализирован в main.py с передачей admin_chat_id
+
+# ============================================================
+# ВАЖНО: Инициализация subscribers_manager ДО импорта в telegram_bot
+# ============================================================
+# Здесь мы создаём экземпляр с admin_chat_id из config
+# Чтобы не было циклического импорта, импортируем config локально
+from config import config as _config
+subscribers_manager = SubscribersManager(admin_chat_id=_config.TELEGRAM_CHAT_ID)
+# ============================================================
