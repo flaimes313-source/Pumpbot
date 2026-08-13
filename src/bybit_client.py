@@ -1,4 +1,6 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import pandas as pd
 import logging
 import time
@@ -14,11 +16,24 @@ class BybitClient:
     
     def __init__(self):
         self.session = requests.Session()
+        
+        # ============================================================
+        # УВЕЛИЧИВАЕМ РАЗМЕР ПУЛА СОЕДИНЕНИЙ ДО 40
+        # ============================================================
+        adapter = HTTPAdapter(
+            pool_connections=40,
+            pool_maxsize=40,
+            max_retries=3
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        # ============================================================
+        
         self.all_symbols = []
         self.spot_symbols = []
         self.linear_symbols = []
-        self._symbols_loaded = False  # Флаг, что символы уже загружены
-        logger.info("Bybit клиент инициализирован")
+        self._symbols_loaded = False
+        logger.info("Bybit клиент инициализирован (пул соединений: 40)")
     
     def _make_request(self, endpoint, params=None, max_retries=3):
         """Выполняет запрос с повторными попытками"""
@@ -66,7 +81,6 @@ class BybitClient:
         Загружает все USDT пары с кешированием
         force_reload=True — принудительная перезагрузка
         """
-        # Если символы уже загружены и не требуется перезагрузка — возвращаем кеш
         if self._symbols_loaded and not force_reload:
             logger.debug(f"📦 Используем кеш символов: {len(self.all_symbols)} монет")
             return self.all_symbols
@@ -105,7 +119,7 @@ class BybitClient:
             
             # Сортируем по объёму
             self.all_symbols = self._sort_by_volume(self.all_symbols)
-            self._symbols_loaded = True  # Отмечаем, что символы загружены
+            self._symbols_loaded = True
             logger.info(f"✅ Найдено {len(self.all_symbols)} монет (кешировано)")
             return self.all_symbols
             
@@ -141,7 +155,6 @@ class BybitClient:
             else:
                 ts = int(timestamp)
             
-            # Если timestamp в миллисекундах (13 цифр), делим на 1000
             if ts > 1000000000000:
                 ts = ts / 1000
             
@@ -166,7 +179,6 @@ class BybitClient:
                     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'
                 ])
                 
-                # Безопасное преобразование timestamp
                 df['timestamp'] = df['timestamp'].apply(self._convert_timestamp)
                 df['close'] = df['close'].astype(float)
                 df['high'] = df['high'].astype(float)

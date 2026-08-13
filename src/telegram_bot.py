@@ -1,10 +1,10 @@
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from config import config
 import logging
 from datetime import datetime
 import asyncio
-from src.utils import signals_history
+from src.utils import signals_history, subscribers_manager
 
 logger = logging.getLogger(__name__)
 
@@ -22,18 +22,434 @@ class TelegramNotifier:
         self.last_signals = []
         self.last_scan_time = None
         self.pending_callbacks = {}
-        self.subscribed_users = set()
+        self.admin_states = {}
         logger.info("Telegram бот инициализирован")
     
     def set_detector(self, detector):
         self.detector = detector
     
-    def _add_user(self, chat_id):
-        if chat_id not in self.subscribed_users:
-            self.subscribed_users.add(chat_id)
-            logger.info(f"✅ Пользователь {chat_id} подписан")
-            return True
-        return False
+    def _add_user(self, update: Update):
+        """
+        Добавляет пользователя в подписчики с сохранением в файл.
+        Новые пользователи добавляются с is_blocked = True (автоблокировка).
+        """
+        chat_id = update.effective_chat.id
+        user = update.effective_user
+        
+        username = user.username if user.username else None
+        first_name = user.first_name if user.first_name else None
+        last_name = user.last_name if user.last_name else None
+        
+        if subscribers_manager.is_subscribed(chat_id):
+            subscribers_manager.add_subscriber(chat_id, username, first_name, last_name)
+            logger.info(f"🔄 Обновлена подписка: @{username or chat_id}")
+            return False
+        
+        subscribers_manager.add_subscriber(chat_id, username, first_name, last_name)
+        subscribers_manager.block_subscriber(chat_id)
+        logger.info(f"🚫 Новый пользователь @{username or chat_id} добавлен с автоблокировкой")
+        return True
+    
+    # ============================================================
+    # АДМИН-ПАНЕЛЬ
+    # ============================================================
+    
+    async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /admin - показывает админ-панель"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 Список пользователей", callback_data="admin_users"),
+                InlineKeyboardButton("➕ Добавить пользователя", callback_data="admin_add")
+            ],
+            [
+                InlineKeyboardButton("➖ Удалить пользователя", callback_data="admin_remove"),
+                InlineKeyboardButton("🚫 Заблокировать", callback_data="admin_block")
+            ],
+            [
+                InlineKeyboardButton("✅ Разблокировать", callback_data="admin_unblock"),
+                InlineKeyboardButton("📨 Рассылка", callback_data="admin_broadcast")
+            ],
+            [
+                InlineKeyboardButton("📊 Статистика бота", callback_data="admin_stats")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📊 <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+            "Выберите действие:",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def admin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка нажатий кнопок в админ-панели"""
+        query = update.callback_query
+        chat_id = query.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await query.answer("⛔ Доступ запрещён.", show_alert=True)
+            return
+        
+        await query.answer()
+        action = query.data
+        
+        if action == "admin_users":
+            await self._show_users(query)
+        
+        elif action == "admin_add":
+            await self._ask_add_user(query)
+        
+        elif action == "admin_remove":
+            await self._ask_remove_user(query)
+        
+        elif action == "admin_block":
+            await self._ask_block_user(query)
+        
+        elif action == "admin_unblock":
+            await self._ask_unblock_user(query)
+        
+        elif action == "admin_broadcast":
+            await self._ask_broadcast(query)
+        
+        elif action == "admin_stats":
+            await self._show_stats(query)
+        
+        elif action == "admin_back":
+            await self._admin_back(query)
+    
+    # ============================================================
+    # МЕТОДЫ АДМИН-ПАНЕЛИ
+    # ============================================================
+    
+    async def _show_users(self, query):
+        """Показывает список пользователей"""
+        subscribers = subscribers_manager.get_subscribers()
+        
+        if not subscribers:
+            await query.edit_message_text(
+                "📊 <b>Список подписчиков</b>\n\nНет подписанных пользователей.",
+                parse_mode='HTML'
+            )
+            return
+        
+        message = "📊 <b>Список подписчиков</b>\n\n"
+        
+        for chat_id_str, data in subscribers.items():
+            username = data.get('username', 'unknown')
+            first_name = data.get('first_name', 'unknown')
+            subscribed_at = data.get('subscribed_at', 'unknown')[:16]
+            is_blocked = data.get('is_blocked', False)
+            
+            status = "🔴 ЗАБЛОКИРОВАН" if is_blocked else "🟢 АКТИВЕН"
+            
+            message += f"👤 @{username} ({first_name})\n"
+            message += f"   🆔 {chat_id_str}\n"
+            message += f"   📅 {subscribed_at}\n"
+            message += f"   📊 {status}\n\n"
+        
+        message += f"\n📊 Всего: {len(subscribers)} пользователей"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _ask_add_user(self, query):
+        """Запрашивает chat_id для добавления"""
+        self.admin_states[query.message.chat_id] = 'add_user'
+        
+        keyboard = [[InlineKeyboardButton("🔙 Отмена", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "➕ <b>Добавление пользователя</b>\n\n"
+            "Введите <b>chat_id</b> или <b>@username</b> пользователя.\n\n"
+            "Пользователь будет автоматически разблокирован.\n\n"
+            "Пример: <code>123456789</code> или <code>@username</code>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _ask_remove_user(self, query):
+        """Запрашивает chat_id для удаления"""
+        self.admin_states[query.message.chat_id] = 'remove_user'
+        
+        keyboard = [[InlineKeyboardButton("🔙 Отмена", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "➖ <b>Удаление пользователя</b>\n\n"
+            "Введите <b>chat_id</b> пользователя для удаления.\n\n"
+            "Пример: <code>123456789</code>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _ask_block_user(self, query):
+        """Запрашивает chat_id для блокировки"""
+        self.admin_states[query.message.chat_id] = 'block_user'
+        
+        keyboard = [[InlineKeyboardButton("🔙 Отмена", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🚫 <b>Блокировка пользователя</b>\n\n"
+            "Введите <b>chat_id</b> пользователя для блокировки.\n\n"
+            "Заблокированный пользователь НЕ будет получать сигналы.\n\n"
+            "Пример: <code>123456789</code>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _ask_unblock_user(self, query):
+        """Запрашивает chat_id для разблокировки"""
+        self.admin_states[query.message.chat_id] = 'unblock_user'
+        
+        keyboard = [[InlineKeyboardButton("🔙 Отмена", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "✅ <b>Разблокировка пользователя</b>\n\n"
+            "Введите <b>chat_id</b> пользователя для разблокировки.\n\n"
+            "Пример: <code>123456789</code>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _ask_broadcast(self, query):
+        """Запрашивает сообщение для рассылки"""
+        self.admin_states[query.message.chat_id] = 'broadcast'
+        
+        keyboard = [[InlineKeyboardButton("🔙 Отмена", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📨 <b>Рассылка сообщения</b>\n\n"
+            "Введите текст сообщения для рассылки <b>ВСЕМ</b> подписанным пользователям.\n\n"
+            "Пример: <i>Всем привет! Бот обновлён.</i>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _show_stats(self, query):
+        """Показывает статистику бота (только для админа)"""
+        subscribers_count = subscribers_manager.get_subscribers_count()
+        signals_count = len(self.last_signals) if self.last_signals else 0
+        last_scan = self.last_scan_time.strftime('%H:%M:%S') if self.last_scan_time else "Не было"
+        
+        message = f"""
+📊 <b>СТАТИСТИКА БОТА</b>
+
+👥 Подписанных пользователей: {subscribers_count}
+📈 Сигналов за последнее сканирование: {signals_count}
+🕐 Последнее сканирование: {last_scan}
+⏱️ Интервал сканирования: {config.CHECK_INTERVAL} сек
+🎯 Порог срабатывания: {config.SCORE_THRESHOLD}/130
+📊 Максимум монет: {config.MAX_SYMBOLS}
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    async def _admin_back(self, query):
+        """Возврат в админ-панель"""
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 Список пользователей", callback_data="admin_users"),
+                InlineKeyboardButton("➕ Добавить пользователя", callback_data="admin_add")
+            ],
+            [
+                InlineKeyboardButton("➖ Удалить пользователя", callback_data="admin_remove"),
+                InlineKeyboardButton("🚫 Заблокировать", callback_data="admin_block")
+            ],
+            [
+                InlineKeyboardButton("✅ Разблокировать", callback_data="admin_unblock"),
+                InlineKeyboardButton("📨 Рассылка", callback_data="admin_broadcast")
+            ],
+            [
+                InlineKeyboardButton("📊 Статистика бота", callback_data="admin_stats")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📊 <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+            "Выберите действие:",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    # ============================================================
+    # ОБРАБОТКА СООБЩЕНИЙ ОТ АДМИНА (для ввода данных)
+    # ============================================================
+    
+    async def handle_admin_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка текстовых сообщений от админа (для диалогов)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            return
+        
+        if chat_id not in self.admin_states:
+            return
+        
+        state = self.admin_states[chat_id]
+        text = update.message.text.strip()
+        
+        if state == 'add_user':
+            await self._process_add_user(update, text)
+        
+        elif state == 'remove_user':
+            await self._process_remove_user(update, text)
+        
+        elif state == 'block_user':
+            await self._process_block_user(update, text)
+        
+        elif state == 'unblock_user':
+            await self._process_unblock_user(update, text)
+        
+        elif state == 'broadcast':
+            await self._process_broadcast(update, text)
+        
+        del self.admin_states[chat_id]
+    
+    async def _process_add_user(self, update, text):
+        """Обработка добавления пользователя (с автоматической разблокировкой)"""
+        chat_id = update.message.chat_id
+        
+        try:
+            if text.startswith('@'):
+                username = text[1:]
+                try:
+                    user = await self.bot.get_chat(text)
+                    user_chat_id = user.id
+                except Exception as e:
+                    await update.message.reply_text(
+                        f"❌ Не удалось найти пользователя {text}.\n\n"
+                        f"Убедитесь, что пользователь существует.\n"
+                        f"Или введите chat_id (число)."
+                    )
+                    return
+            else:
+                user_chat_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите chat_id (число) или @username.")
+            return
+        
+        if not subscribers_manager.is_subscribed(user_chat_id):
+            subscribers_manager.add_subscriber(user_chat_id)
+        
+        subscribers_manager.unblock_subscriber(user_chat_id)
+        
+        await update.message.reply_text(
+            f"✅ Пользователь {user_chat_id} добавлен и РАЗБЛОКИРОВАН!\n\n"
+            f"Теперь он будет получать сигналы."
+        )
+    
+    async def _process_remove_user(self, update, text):
+        """Обработка удаления пользователя"""
+        try:
+            user_chat_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите chat_id (число).")
+            return
+        
+        if subscribers_manager.remove_subscriber(user_chat_id):
+            await update.message.reply_text(f"✅ Пользователь {user_chat_id} удалён из подписчиков")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def _process_block_user(self, update, text):
+        """Обработка блокировки пользователя"""
+        try:
+            user_chat_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите chat_id (число).")
+            return
+        
+        if subscribers_manager.block_subscriber(user_chat_id):
+            await update.message.reply_text(f"🚫 Пользователь {user_chat_id} заблокирован (сигналы не приходят)")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def _process_unblock_user(self, update, text):
+        """Обработка разблокировки пользователя"""
+        try:
+            user_chat_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите chat_id (число).")
+            return
+        
+        if subscribers_manager.unblock_subscriber(user_chat_id):
+            await update.message.reply_text(f"✅ Пользователь {user_chat_id} разблокирован (сигналы снова приходят)")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def _process_broadcast(self, update, text):
+        """Обработка рассылки"""
+        chat_id = update.message.chat_id
+        message_text = text
+        
+        subscribers = subscribers_manager.get_all_subscribers_list()
+        
+        if not subscribers:
+            await update.message.reply_text("⚠️ Нет подписанных пользователей для рассылки.")
+            return
+        
+        await update.message.reply_text(
+            f"📨 <b>Начинаю рассылку</b>\n\n"
+            f"👥 Получателей: {len(subscribers)}\n"
+            f"📝 Сообщение: {message_text}\n\n"
+            f"⏳ Идёт отправка...",
+            parse_mode='HTML'
+        )
+        
+        success_count = 0
+        fail_count = 0
+        
+        for user_chat_id in subscribers:
+            try:
+                await self.bot.send_message(
+                    chat_id=user_chat_id,
+                    text=f"📢 <b>Сообщение от администратора</b>\n\n{message_text}",
+                    parse_mode='HTML'
+                )
+                success_count += 1
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                fail_count += 1
+                logger.error(f"❌ Ошибка отправки пользователю {user_chat_id}: {e}")
+        
+        await update.message.reply_text(
+            f"✅ <b>Рассылка завершена!</b>\n\n"
+            f"📨 Успешно доставлено: {success_count}\n"
+            f"❌ Не доставлено: {fail_count}\n"
+            f"👥 Всего получателей: {len(subscribers)}",
+            parse_mode='HTML'
+        )
+        
+        logger.info(f"📨 Рассылка завершена: {success_count} успешно, {fail_count} ошибок")
+    
+    # ============================================================
+    # ОСНОВНЫЕ КОМАНДЫ
+    # ============================================================
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start - запускает сканирование и подписывает на сигналы"""
@@ -41,7 +457,30 @@ class TelegramNotifier:
         user_name = user.first_name if user.first_name else "Пользователь"
         chat_id = update.message.chat_id
         
-        self._add_user(chat_id)
+        self._add_user(update)
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text(
+                f"👋 Привет, {user_name}!\n\n"
+                f"⛔ <b>Ваш аккаунт ожидает подтверждения.</b>\n\n"
+                f"Администратор получил уведомление о вашем запросе.\n"
+                f"После подтверждения вы будете получать сигналы.\n\n"
+                f"⏳ Пожалуйста, подождите.",
+                parse_mode='HTML'
+            )
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=f"🆕 <b>Новый пользователь ожидает подтверждения!</b>\n\n"
+                     f"👤 Имя: {user_name}\n"
+                     f"🆔 ID: {chat_id}\n"
+                     f"👤 Username: @{user.username if user.username else 'Нет'}\n\n"
+                     f"Для активации используйте:\n"
+                     f"<code>/add_user {chat_id}</code>\n"
+                     f"или\n"
+                     f"<code>/add_user @{user.username if user.username else ''}</code>",
+                parse_mode='HTML'
+            )
+            return
         
         if self.is_scanning:
             status_text = "⏸️ НА ПАУЗЕ" if self.is_paused else "✅ АКТИВЕН"
@@ -50,20 +489,13 @@ class TelegramNotifier:
                 f"✅ Сканирование УЖЕ запущено!\n"
                 f"📊 Статус: {status_text}\n"
                 f"🔄 Бот работает в фоновом режиме.\n\n"
-                f"📊 <b>Двухстадийная система:</b>\n"
-                f"🟡 Стадия 1 — Раннее предупреждение (50-69 баллов)\n"
-                f"🟢 Стадия 2 — Памп/Дамп подтвержден (70+ баллов)\n\n"
-                f"🎯 <b>Направление:</b>\n"
-                f"🟢 LONG — памп вверх\n"
-                f"🔴 SHORT — дамп вниз\n\n"
+                f"✅ Вы подписаны на сигналы!\n\n"
                 f"📱 Команды:\n"
                 f"/start - Запустить/подписаться\n"
                 f"/stop - Остановить сканирование\n"
                 f"/pause - Поставить на паузу\n"
                 f"/resume - Возобновить работу\n"
-                f"/result - Результаты последнего сканирования\n"
-                f"/stats - Статистика сигналов\n"
-                f"/status - Статус\n"
+                f"/support - Контакты поддержки\n"
                 f"/help - Помощь",
                 parse_mode='HTML'
             )
@@ -95,9 +527,7 @@ class TelegramNotifier:
             f"/stop - Остановить сканирование\n"
             f"/pause - Поставить на паузу\n"
             f"/resume - Возобновить работу\n"
-            f"/result - Результаты последнего сканирования\n"
-            f"/stats - Статистика сигналов\n"
-            f"/status - Статус\n"
+            f"/support - Контакты поддержки\n"
             f"/help - Помощь\n\n"
             f"⚠️ <i>Бот предоставляет информационно-аналитические материалы и не является инвестиционным советником. Сигналы не являются индивидуальными инвестиционными рекомендациями. Решение о совершении сделки пользователь принимает самостоятельно. Торговля криптовалютами связана с высоким риском потери капитала.</i>",
             parse_mode='HTML'
@@ -112,6 +542,11 @@ class TelegramNotifier:
         """Команда /stop - останавливает сканирование"""
         chat_id = update.message.chat_id
         
+        # Проверяем, разблокирован ли пользователь
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         if not self.is_scanning:
             await update.message.reply_text("⚠️ Сканирование уже остановлено.")
             return
@@ -125,8 +560,6 @@ class TelegramNotifier:
         if self.detector:
             self.detector.resume()
         
-        self.subscribed_users.clear()
-        
         await update.message.reply_text(
             "🛑 <b>Сканирование ОСТАНОВЛЕНО!</b>\n\n"
             "Для запуска используйте /start",
@@ -136,6 +569,12 @@ class TelegramNotifier:
     
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - поставить сканирование на паузу"""
+        chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         if not self.is_scanning:
             await update.message.reply_text(
                 "⚠️ Сканирование не запущено.\nИспользуйте /start для запуска.",
@@ -163,6 +602,12 @@ class TelegramNotifier:
     
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить сканирование"""
+        chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         if not self.is_scanning:
             await update.message.reply_text(
                 "⚠️ Сканирование остановлено.\nИспользуйте /start для запуска.",
@@ -188,20 +633,51 @@ class TelegramNotifier:
         )
         logger.info("▶️ Сканирование возобновлено по команде /resume")
     
+    async def support_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /support - показывает контакты поддержки (доступна всем)"""
+        keyboard = [
+            [
+                InlineKeyboardButton("👤 Админ @Linga3444", url="https://t.me/Linga3444"),
+                InlineKeyboardButton("👤 Админ @testirovshikii", url="https://t.me/testirovshikii")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📞 <b>Поддержка</b>\n\n"
+            "По всем вопросам обращайтесь к администраторам:\n\n"
+            "👤 <b>@Linga3444</b> — главный администратор\n"
+            "👤 <b>@testirovshikii</b> — техническая поддержка\n\n"
+            "Нажмите на имя, чтобы написать в Telegram.",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /stats - показывает статистику сигналов"""
+        """Команда /stats - показывает статистику сигналов (только для разблокированных)"""
         chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         signals_history.set_user(chat_id)
         stats_message = signals_history.get_stats_message()
         await update.message.reply_text(stats_message, parse_mode='HTML')
     
     async def result_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /result - показывает результаты последнего сканирования"""
+        """Команда /result - показывает результаты последнего сканирования (только для разблокированных)"""
+        chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         if self.last_scan_time is None:
             await update.message.reply_text(
                 "📊 <b>Результаты сканирования</b>\n\n"
                 "🔍 Сканирование ещё не проводилось.\n"
-                "Дождитесь первого сканирования или запустите /start",
+                "Дождитесь первого сканирования.",
                 parse_mode='HTML'
             )
             return
@@ -257,7 +733,13 @@ class TelegramNotifier:
         await update.message.reply_text(message, parse_mode='HTML')
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /status - показывает статус бота"""
+        """Команда /status - показывает статус бота (только для разблокированных)"""
+        chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         if not self.is_scanning:
             status_text = "⏹️ ОСТАНОВЛЕН"
         elif self.is_paused:
@@ -267,13 +749,11 @@ class TelegramNotifier:
         
         last_scan = self.last_scan_time.strftime('%H:%M:%S') if self.last_scan_time else "Не было"
         signals_count = len(self.last_signals) if self.last_signals else 0
-        users_count = len(self.subscribed_users)
         
         await update.message.reply_text(
             f"📊 <b>СТАТУС БОТА</b>\n"
             f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
             f"📈 Статус сканирования: {status_text}\n"
-            f"👥 Подписанных пользователей: {users_count}\n"
             f"⏱️ Интервал: {config.CHECK_INTERVAL} сек\n"
             f"🎯 Порог Стадии 1: 50/130\n"
             f"🎯 Порог Стадии 2: 70/130\n"
@@ -286,15 +766,19 @@ class TelegramNotifier:
             f"/stop - Остановить сканирование\n"
             f"/pause - Поставить на паузу\n"
             f"/resume - Возобновить\n"
-            f"/result - Результаты последнего сканирования\n"
-            f"/stats - Статистика сигналов\n"
-            f"/status - Статус\n"
+            f"/support - Контакты поддержки\n"
             f"/help - Помощь",
             parse_mode='HTML'
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /help - показывает помощь"""
+        """Команда /help - показывает помощь (доступна всем)"""
+        chat_id = update.message.chat_id
+        
+        if subscribers_manager.is_blocked(chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
         await update.message.reply_text(
             "❓ <b>ПОМОЩЬ</b>\n\n"
             "📌 <b>Что делает бот?</b>\n"
@@ -315,9 +799,7 @@ class TelegramNotifier:
             "/stop   - Остановить сканирование\n"
             "/pause  - Поставить на паузу\n"
             "/resume - Возобновить работу\n"
-            "/result - Результаты последнего сканирования\n"
-            "/stats  - Статистика сигналов\n"
-            "/status - Показать статус\n"
+            "/support - Контакты поддержки\n"
             "/help   - Эта справка\n\n"
             "⚠️ <i>Бот предоставляет информационно-аналитические материалы и не является инвестиционным советником. Сигналы не являются индивидуальными инвестиционными рекомендациями. Решение о совершении сделки пользователь принимает самостоятельно. Торговля криптовалютами связана с высоким риском потери капитала.</i>",
             parse_mode='HTML'
@@ -382,25 +864,40 @@ class TelegramNotifier:
     
     async def broadcast_signals(self, signals):
         """Отправка сигналов всем подписанным пользователям"""
+        subscribers = subscribers_manager.get_subscribers_list()
+        
+        if not subscribers:
+            logger.warning("⚠️ Нет активных подписанных пользователей")
+            return
+        
+        logger.info(f"📊 Отправка сигналов {len(subscribers)} активным пользователям")
+        
         for signal in signals[:config.TOP_SIGNALS]:
             signal_data = signal.copy()
             message = self._format_signal_message(signal)
             
-            for chat_id in self.subscribed_users:
-                signals_history.set_user(chat_id)
-                signal_id = signals_history.add_signal(signal_data)
-                
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ Отработал", callback_data=f"confirm_{signal_id}"),
-                        InlineKeyboardButton("❌ Не отработал", callback_data=f"fail_{signal_id}"),
-                        InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{signal_id}")
+            for chat_id in subscribers:
+                try:
+                    if subscribers_manager.is_blocked(chat_id):
+                        logger.debug(f"⏭️ Пропуск заблокированного пользователя {chat_id}")
+                        continue
+                    
+                    signals_history.set_user(chat_id)
+                    signal_id = signals_history.add_signal(signal_data)
+                    
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("✅ Отработал", callback_data=f"confirm_{signal_id}"),
+                            InlineKeyboardButton("❌ Не отработал", callback_data=f"fail_{signal_id}"),
+                            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{signal_id}")
+                        ]
                     ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await self.send_message_to_user(chat_id, message, silent=False, reply_markup=reply_markup)
-                await asyncio.sleep(0.3)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await self.send_message_to_user(chat_id, message, silent=False, reply_markup=reply_markup)
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки пользователю {chat_id}: {e}")
     
     def _format_signal_message(self, signal):
         """Форматирует сообщение с сигналом (дисклеймер ПЕРЕД кнопками)"""
@@ -447,7 +944,6 @@ class TelegramNotifier:
             else:
                 stage_info = "📌 Движение подтверждено, направление уточняется"
         
-        # Дисклеймер ПЕРЕД кнопками
         return f"""
 🔔🔊 <b>ВНИМАНИЕ! ОБНАРУЖЕН СИГНАЛ!</b>
 
@@ -476,6 +972,11 @@ class TelegramNotifier:
         """Обработка нажатия на кнопки обратной связи"""
         query = update.callback_query
         chat_id = query.message.chat_id
+        
+        # Проверяем, разблокирован ли пользователь
+        if subscribers_manager.is_blocked(chat_id):
+            await query.answer("⛔ Доступ запрещён.", show_alert=True)
+            return
         
         signals_history.set_user(chat_id)
         
@@ -543,14 +1044,20 @@ class TelegramNotifier:
                 del self.pending_callbacks[query.message.message_id]
     
     async def run_bot(self):
-        """Запуск Telegram бота"""
+        """Запуск Telegram бота с увеличенными таймаутами"""
         try:
             logger.info("🔄 Запускаем Telegram бота...")
             
             await self.bot.delete_webhook(drop_pending_updates=True)
             
-            self.application = Application.builder().token(config.TELEGRAM_TOKEN).build()
+            self.application = Application.builder() \
+                .token(config.TELEGRAM_TOKEN) \
+                .connect_timeout(60) \
+                .read_timeout(60) \
+                .write_timeout(60) \
+                .build()
             
+            # Основные команды (доступны только разблокированным)
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("stop", self.stop_command))
             self.application.add_handler(CommandHandler("pause", self.pause_command))
@@ -560,13 +1067,26 @@ class TelegramNotifier:
             self.application.add_handler(CommandHandler("status", self.status_command))
             self.application.add_handler(CommandHandler("help", self.help_command))
             
+            # Команды доступные всем (включая заблокированных)
+            self.application.add_handler(CommandHandler("support", self.support_command))
+            
+            # Админ-панель
+            self.application.add_handler(CommandHandler("admin", self.admin_panel))
+            self.application.add_handler(CallbackQueryHandler(self.admin_callback, pattern="^admin_"))
+            
+            # Обработчик текстовых сообщений для админ-диалогов
+            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_admin_message))
+            
+            # Обработчик для отмены диалога
+            self.application.add_handler(CommandHandler("cancel", self._cancel_admin_dialog))
+            
             self.application.add_handler(CallbackQueryHandler(self.handle_feedback))
             
             await self.application.initialize()
             await self.application.start()
             await self.application.updater.start_polling(
                 drop_pending_updates=True,
-                timeout=30
+                timeout=60
             )
             
             logger.info("✅ Telegram бот запущен!")
@@ -574,6 +1094,222 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Telegram бота: {e}")
             return False
+    
+    async def _cancel_admin_dialog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отмена текущего диалога"""
+        chat_id = update.message.chat_id
+        if chat_id in self.admin_states:
+            del self.admin_states[chat_id]
+            await update.message.reply_text("❌ Действие отменено.")
+    
+    # ============================================================
+    # СТАРЫЕ АДМИН-КОМАНДЫ (оставлены для совместимости)
+    # ============================================================
+    
+    async def add_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /add_user - добавляет пользователя вручную (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "📝 Использование: /add_user <chat_id> [username]\n"
+                "Пример: /add_user 123456789 @username"
+            )
+            return
+        
+        try:
+            user_chat_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат chat_id")
+            return
+        
+        username = args[1] if len(args) > 1 else None
+        
+        if subscribers_manager.add_subscriber(user_chat_id, username):
+            subscribers_manager.unblock_subscriber(user_chat_id)
+            await update.message.reply_text(f"✅ Пользователь {user_chat_id} добавлен и разблокирован")
+        else:
+            await update.message.reply_text(f"ℹ️ Пользователь {user_chat_id} уже в списке подписчиков")
+            if subscribers_manager.is_blocked(user_chat_id):
+                subscribers_manager.unblock_subscriber(user_chat_id)
+                await update.message.reply_text(f"🔓 Пользователь {user_chat_id} разблокирован")
+    
+    async def remove_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /remove_user - удаляет пользователя (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "📝 Использование: /remove_user <chat_id>\n"
+                "Пример: /remove_user 123456789"
+            )
+            return
+        
+        try:
+            user_chat_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат chat_id")
+            return
+        
+        if subscribers_manager.remove_subscriber(user_chat_id):
+            await update.message.reply_text(f"✅ Пользователь {user_chat_id} удалён из подписчиков")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def block_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /block_user - блокирует пользователя (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "📝 Использование: /block_user <chat_id>\n"
+                "Пример: /block_user 123456789"
+            )
+            return
+        
+        try:
+            user_chat_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат chat_id")
+            return
+        
+        if subscribers_manager.block_subscriber(user_chat_id):
+            await update.message.reply_text(f"🚫 Пользователь {user_chat_id} заблокирован (сигналы не приходят)")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def unblock_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /unblock_user - разблокирует пользователя (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "📝 Использование: /unblock_user <chat_id>\n"
+                "Пример: /unblock_user 123456789"
+            )
+            return
+        
+        try:
+            user_chat_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат chat_id")
+            return
+        
+        if subscribers_manager.unblock_subscriber(user_chat_id):
+            await update.message.reply_text(f"✅ Пользователь {user_chat_id} разблокирован (сигналы снова приходят)")
+        else:
+            await update.message.reply_text(f"⚠️ Пользователь {user_chat_id} не найден")
+    
+    async def users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /users - показывает список всех подписчиков (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        subscribers = subscribers_manager.get_subscribers()
+        
+        if not subscribers:
+            await update.message.reply_text("📊 Нет подписанных пользователей.")
+            return
+        
+        message = "📊 <b>Список подписчиков</b>\n\n"
+        
+        for chat_id_str, data in subscribers.items():
+            username = data.get('username', 'unknown')
+            first_name = data.get('first_name', 'unknown')
+            subscribed_at = data.get('subscribed_at', 'unknown')[:16]
+            is_blocked = data.get('is_blocked', False)
+            
+            status = "🔴 ЗАБЛОКИРОВАН" if is_blocked else "🟢 АКТИВЕН"
+            
+            message += f"👤 @{username} ({first_name})\n"
+            message += f"   🆔 {chat_id_str}\n"
+            message += f"   📅 {subscribed_at}\n"
+            message += f"   📊 {status}\n\n"
+        
+        message += f"\n📊 Всего: {len(subscribers)} пользователей"
+        
+        await update.message.reply_text(message, parse_mode='HTML')
+    
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /broadcast - отправляет сообщение всем подписанным пользователям (только для админа)"""
+        chat_id = update.message.chat_id
+        
+        if str(chat_id) != str(self.chat_id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "📝 Использование: /broadcast <текст сообщения>\n"
+                "Пример: /broadcast Всем привет! Бот обновлён."
+            )
+            return
+        
+        message_text = ' '.join(args)
+        
+        subscribers = subscribers_manager.get_all_subscribers_list()
+        
+        if not subscribers:
+            await update.message.reply_text("⚠️ Нет подписанных пользователей для рассылки.")
+            return
+        
+        await update.message.reply_text(
+            f"📨 <b>Начинаю рассылку</b>\n\n"
+            f"👥 Получателей: {len(subscribers)}\n"
+            f"📝 Сообщение: {message_text}\n\n"
+            f"⏳ Идёт отправка...",
+            parse_mode='HTML'
+        )
+        
+        success_count = 0
+        fail_count = 0
+        
+        for user_chat_id in subscribers:
+            try:
+                await self.bot.send_message(
+                    chat_id=user_chat_id,
+                    text=f"📢 <b>Сообщение от администратора</b>\n\n{message_text}",
+                    parse_mode='HTML'
+                )
+                success_count += 1
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                fail_count += 1
+                logger.error(f"❌ Ошибка отправки пользователю {user_chat_id}: {e}")
+        
+        await update.message.reply_text(
+            f"✅ <b>Рассылка завершена!</b>\n\n"
+            f"📨 Успешно доставлено: {success_count}\n"
+            f"❌ Не доставлено: {fail_count}\n"
+            f"👥 Всего получателей: {len(subscribers)}",
+            parse_mode='HTML'
+        )
+        
+        logger.info(f"📨 Рассылка завершена: {success_count} успешно, {fail_count} ошибок")
     
     async def stop_bot(self):
         """Остановка Telegram бота"""

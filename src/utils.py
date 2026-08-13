@@ -34,18 +34,15 @@ class SignalsHistory:
         self.history_file = None
     
     def _get_user_file(self, chat_id):
-        """Возвращает путь к файлу истории для конкретного пользователя"""
         return self.history_dir / f'signals_history_{chat_id}.json'
     
     def set_user(self, chat_id):
-        """Устанавливает текущего пользователя и загружает его историю"""
         self.current_chat_id = chat_id
         self.history_file = self._get_user_file(chat_id)
         self.data = self._load()
         return self
     
     def _default_data(self):
-        """Возвращает структуру по умолчанию"""
         return {
             'signals': [],
             'stats': {
@@ -59,7 +56,6 @@ class SignalsHistory:
         }
     
     def _ensure_file_exists(self):
-        """Принудительное создание файла, если его нет"""
         if not self.history_file.exists():
             logger.info(f"📁 Файл истории для пользователя {self.current_chat_id} не найден, создаю новый...")
             self.data = self._default_data()
@@ -69,18 +65,15 @@ class SignalsHistory:
         return False
     
     def _load(self):
-        """Загружает историю из файла"""
         if self.history_file is None:
             return self._default_data()
         
-        # Проверяем и создаём файл если нужно
         self._ensure_file_exists()
         
         try:
             with open(self.history_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
-                # Проверяем наличие всех полей в stats
                 stats = data.get('stats', {})
                 default_stats = self._default_data()['stats']
                 
@@ -102,7 +95,6 @@ class SignalsHistory:
             return self._default_data()
     
     def _save(self, data=None):
-        """Сохраняет историю в файл"""
         if self.history_file is None:
             return False
         
@@ -118,10 +110,6 @@ class SignalsHistory:
             return False
     
     def add_signal(self, signal_data):
-        """
-        Добавляет новый сигнал в историю
-        signal_data: dict с данными сигнала
-        """
         if self.data is None:
             return None
         
@@ -152,10 +140,6 @@ class SignalsHistory:
         return signal_entry['id']
     
     def update_signal_status(self, signal_id, status, comment=None):
-        """
-        Обновляет статус сигнала
-        status: 'confirmed', 'failed' или 'deleted'
-        """
         if self.data is None:
             return False, "Пользователь не задан"
         
@@ -169,7 +153,6 @@ class SignalsHistory:
                 signal['feedback_time'] = datetime.now().isoformat()
                 signal['feedback_comment'] = comment
                 
-                # Обновляем статистику
                 if status == 'deleted':
                     if old_status == 'pending':
                         self.data['stats']['pending'] -= 1
@@ -191,7 +174,6 @@ class SignalsHistory:
                     elif status == 'failed':
                         self.data['stats']['failed'] += 1
                 
-                # Пересчитываем точность
                 total_answered = self.data['stats']['confirmed'] + self.data['stats']['failed']
                 if total_answered > 0:
                     self.data['stats']['accuracy'] = round(
@@ -206,13 +188,11 @@ class SignalsHistory:
         return False, "Сигнал не найден"
     
     def get_stats(self):
-        """Возвращает статистику"""
         if self.data is None:
             return self._default_data()['stats']
         return self.data['stats']
     
     def get_signal_by_id(self, signal_id):
-        """Возвращает сигнал по ID"""
         if self.data is None:
             return None
         for signal in self.data['signals']:
@@ -221,13 +201,11 @@ class SignalsHistory:
         return None
     
     def get_recent_signals(self, limit=10):
-        """Возвращает последние N сигналов"""
         if self.data is None:
             return []
         return self.data['signals'][-limit:][::-1]
     
     def get_stats_message(self):
-        """Формирует сообщение со статистикой"""
         if self.data is None:
             return "📊 <b>Статистика сигналов</b>\n\nПока нет данных."
         
@@ -267,5 +245,140 @@ class SignalsHistory:
         return message
 
 
-# Глобальный экземпляр
+class SubscribersManager:
+    """Класс для управления подписчиками с сохранением в файл"""
+    
+    def __init__(self):
+        self.subscribers_file = Path('data') / 'subscribers.json'
+        self.subscribers_file.parent.mkdir(exist_ok=True)
+        self.subscribers = {}
+        self._load()
+    
+    def _load(self):
+        """Загружает подписчиков из файла"""
+        if self.subscribers_file.exists():
+            try:
+                with open(self.subscribers_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.subscribers = data.get('users', {})
+                    logger.info(f"✅ Загружено {len(self.subscribers)} подписчиков из файла")
+                    return
+            except Exception as e:
+                logger.error(f"Ошибка загрузки подписчиков: {e}")
+        
+        self.subscribers = {}
+        self._save()
+    
+    def _save(self):
+        """Сохраняет подписчиков в файл"""
+        try:
+            data = {
+                'users': self.subscribers,
+                'total': len(self.subscribers),
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.subscribers_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка сохранения подписчиков: {e}")
+            return False
+    
+    def add_subscriber(self, chat_id, username=None, first_name=None, last_name=None):
+        """Добавляет подписчика"""
+        chat_id_str = str(chat_id)
+        
+        if chat_id_str in self.subscribers:
+            # Обновляем информацию
+            self.subscribers[chat_id_str]['last_active'] = datetime.now().isoformat()
+            if username:
+                self.subscribers[chat_id_str]['username'] = username
+            if first_name:
+                self.subscribers[chat_id_str]['first_name'] = first_name
+            self._save()
+            return False  # Уже был подписан
+        
+        # Добавляем нового
+        self.subscribers[chat_id_str] = {
+            'chat_id': chat_id,
+            'username': username or 'unknown',
+            'first_name': first_name or 'unknown',
+            'last_name': last_name or '',
+            'subscribed_at': datetime.now().isoformat(),
+            'last_active': datetime.now().isoformat(),
+            'is_blocked': False
+        }
+        self._save()
+        logger.info(f"✅ Новый подписчик: {username or chat_id}")
+        return True
+    
+    def remove_subscriber(self, chat_id):
+        """Удаляет подписчика"""
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.subscribers:
+            del self.subscribers[chat_id_str]
+            self._save()
+            logger.info(f"❌ Подписчик {chat_id} удалён")
+            return True
+        return False
+    
+    def block_subscriber(self, chat_id):
+        """Блокирует подписчика (временно)"""
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.subscribers:
+            self.subscribers[chat_id_str]['is_blocked'] = True
+            self._save()
+            logger.info(f"🚫 Подписчик {chat_id} заблокирован")
+            return True
+        return False
+    
+    def unblock_subscriber(self, chat_id):
+        """Разблокирует подписчика"""
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.subscribers:
+            self.subscribers[chat_id_str]['is_blocked'] = False
+            self._save()
+            logger.info(f"✅ Подписчик {chat_id} разблокирован")
+            return True
+        return False
+    
+    def get_subscribers(self):
+        """Возвращает всех подписчиков"""
+        return self.subscribers
+    
+    def get_subscribers_count(self):
+        """Возвращает количество подписчиков"""
+        return len(self.subscribers)
+    
+    def is_subscribed(self, chat_id):
+        """Проверяет, подписан ли пользователь"""
+        return str(chat_id) in self.subscribers
+    
+    def is_blocked(self, chat_id):
+        """Проверяет, заблокирован ли пользователь"""
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.subscribers:
+            return self.subscribers[chat_id_str].get('is_blocked', False)
+        return False
+    
+    def get_subscribers_list(self):
+        """Возвращает список chat_id только НЕ ЗАБЛОКИРОВАННЫХ подписчиков"""
+        return [
+            int(chat_id) for chat_id, data in self.subscribers.items()
+            if not data.get('is_blocked', False)
+        ]
+    
+    def get_all_subscribers_list(self):
+        """Возвращает список chat_id ВСЕХ подписчиков (включая заблокированных)"""
+        return [int(chat_id) for chat_id in self.subscribers.keys()]
+    
+    def clear_all(self):
+        """Очищает список подписчиков"""
+        self.subscribers = {}
+        self._save()
+        logger.info("🗑️ Все подписчики удалены")
+
+
+# Глобальные экземпляры
 signals_history = SignalsHistory()
+subscribers_manager = SubscribersManager()
