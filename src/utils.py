@@ -246,13 +246,54 @@ class SignalsHistory:
 
 
 class SubscribersManager:
-    """Класс для управления подписчиками с сохранением в файл"""
+    """Класс для управления подписчиками с сохранением в файл (СИНГЛТОН)"""
     
-    def __init__(self):
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(SubscribersManager, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self, admin_chat_id=None):
+        # Проверяем, был ли уже инициализирован
+        if hasattr(self, '_initialized'):
+            return
+        
+        self._initialized = True
         self.subscribers_file = Path('data') / 'subscribers.json'
         self.subscribers_file.parent.mkdir(exist_ok=True)
         self.subscribers = {}
+        self.admin_chat_id = admin_chat_id
         self._load()
+        self._ensure_admin_exists()
+        logger.info(f"📊 SubscribersManager инициализирован, загружено {len(self.subscribers)} подписчиков")
+    
+    def _ensure_admin_exists(self):
+        """Автоматически добавляет администратора в список подписчиков при запуске"""
+        if self.admin_chat_id is None:
+            return
+        
+        admin_id_str = str(self.admin_chat_id)
+        
+        if admin_id_str not in self.subscribers:
+            logger.info(f"👤 Добавляю администратора {self.admin_chat_id} в подписчики...")
+            self.subscribers[admin_id_str] = {
+                'chat_id': self.admin_chat_id,
+                'username': 'admin',
+                'first_name': 'Administrator',
+                'last_name': '',
+                'subscribed_at': datetime.now().isoformat(),
+                'last_active': datetime.now().isoformat(),
+                'is_blocked': False
+            }
+            self._save()
+            logger.info(f"✅ Администратор {self.admin_chat_id} добавлен и разблокирован")
+        else:
+            if self.subscribers[admin_id_str].get('is_blocked', False):
+                self.subscribers[admin_id_str]['is_blocked'] = False
+                self._save()
+                logger.info(f"🔓 Администратор {self.admin_chat_id} разблокирован")
     
     def _load(self):
         """Загружает подписчиков из файла"""
@@ -289,16 +330,14 @@ class SubscribersManager:
         chat_id_str = str(chat_id)
         
         if chat_id_str in self.subscribers:
-            # Обновляем информацию
             self.subscribers[chat_id_str]['last_active'] = datetime.now().isoformat()
             if username:
                 self.subscribers[chat_id_str]['username'] = username
             if first_name:
                 self.subscribers[chat_id_str]['first_name'] = first_name
             self._save()
-            return False  # Уже был подписан
+            return False
         
-        # Добавляем нового
         self.subscribers[chat_id_str] = {
             'chat_id': chat_id,
             'username': username or 'unknown',
@@ -306,7 +345,7 @@ class SubscribersManager:
             'last_name': last_name or '',
             'subscribed_at': datetime.now().isoformat(),
             'last_active': datetime.now().isoformat(),
-            'is_blocked': False
+            'is_blocked': True
         }
         self._save()
         logger.info(f"✅ Новый подписчик: {username or chat_id}")
@@ -343,23 +382,19 @@ class SubscribersManager:
         return False
     
     def get_subscribers(self):
-        """Возвращает всех подписчиков"""
         return self.subscribers
     
     def get_subscribers_count(self):
-        """Возвращает количество подписчиков"""
         return len(self.subscribers)
     
     def is_subscribed(self, chat_id):
-        """Проверяет, подписан ли пользователь"""
         return str(chat_id) in self.subscribers
     
     def is_blocked(self, chat_id):
-        """Проверяет, заблокирован ли пользователь"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
-            return self.subscribers[chat_id_str].get('is_blocked', False)
-        return False
+            return self.subscribers[chat_id_str].get('is_blocked', True)
+        return True
     
     def get_subscribers_list(self):
         """Возвращает список chat_id только НЕ ЗАБЛОКИРОВАННЫХ подписчиков"""
@@ -373,7 +408,6 @@ class SubscribersManager:
         return [int(chat_id) for chat_id in self.subscribers.keys()]
     
     def clear_all(self):
-        """Очищает список подписчиков"""
         self.subscribers = {}
         self._save()
         logger.info("🗑️ Все подписчики удалены")
@@ -381,4 +415,4 @@ class SubscribersManager:
 
 # Глобальные экземпляры
 signals_history = SignalsHistory()
-subscribers_manager = SubscribersManager()
+subscribers_manager = None  # Будет инициализирован в main.py с передачей admin_chat_id

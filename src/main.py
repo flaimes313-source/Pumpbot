@@ -7,10 +7,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from src.detector import PumpDetector
 from src.telegram_bot import TelegramNotifier
-from src.utils import setup_logging
+from src.utils import setup_logging, SubscribersManager
 from src.trade_stream import trade_stream
 
 logger = setup_logging()
+
+# ============================================================
+# ИНИЦИАЛИЗИРУЕМ subscribers_manager (СИНГЛТОН)
+# ============================================================
+# Это создаст экземпляр, если его ещё нет, или вернёт существующий
+subscribers_manager = SubscribersManager(admin_chat_id=config.TELEGRAM_CHAT_ID)
+# ============================================================
 
 async def main():
     """Запуск бота"""
@@ -22,31 +29,28 @@ async def main():
         detector = PumpDetector()
         notifier = TelegramNotifier()
         
-        # Передаём детектор в нотификатор
         notifier.set_detector(detector)
         
-        # ============================================================
-        # ПРЕДВАРИТЕЛЬНАЯ ЗАГРУЗКА СИМВОЛОВ (ОДИН РАЗ ПРИ СТАРТЕ)
-        # ============================================================
-        logger.info("🔄 Предварительная загрузка символов...")
-        symbols = detector.client.load_all_symbols()
-        if symbols:
-            symbols_to_watch = symbols[:config.MAX_SYMBOLS]
-            logger.info(f"📊 Загружено {len(symbols_to_watch)} символов")
-        else:
-            logger.warning("⚠️ Не удалось загрузить символы")
-        # ============================================================
-        
-        # Запускаем WebSocket
+        # Загружаем символы для WebSocket
         try:
-            logger.info("🔄 Запускаем TradeStream...")
+            logger.info("🔄 Загружаем символы для TradeStream...")
+            symbols = detector.client.load_all_symbols()
             if symbols:
-                asyncio.create_task(trade_stream.connect(symbols_to_watch))
-                logger.info(f"✅ TradeStream запущен для {len(symbols_to_watch)} символов")
+                symbols_to_watch = symbols[:config.MAX_SYMBOLS]
+                logger.info(f"📊 Загружено {len(symbols_to_watch)} символов для WebSocket")
+                
+                try:
+                    asyncio.create_task(trade_stream.connect(symbols_to_watch))
+                    logger.info(f"✅ TradeStream запущен для {len(symbols_to_watch)} символов")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка запуска TradeStream: {e}")
+                    logger.info("ℹ️ TradeStream будет работать в режиме эмуляции")
+                    trade_stream.use_websocket = False
+                    asyncio.create_task(trade_stream._emulate_trades())
             else:
-                logger.warning("⚠️ TradeStream не запущен — нет символов")
+                logger.warning("⚠️ Не удалось загрузить символы для WebSocket")
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска TradeStream: {e}")
+            logger.error(f"❌ Ошибка загрузки символов: {e}")
             logger.info("ℹ️ TradeStream будет работать в режиме эмуляции")
             trade_stream.use_websocket = False
             asyncio.create_task(trade_stream._emulate_trades())
@@ -59,19 +63,35 @@ async def main():
         logger.info(f"🎯 Порог Стадии 1: 50/130")
         logger.info(f"🎯 Порог Стадии 2: 70/130")
         logger.info("="*50)
-        logger.info("📊 НОВЫЕ УЛУЧШЕНИЯ:")
-        logger.info("   ✅ Кеширование символов (загрузка 1 раз)")
-        logger.info("   ✅ Асинхронное сканирование")
-        logger.info("   ✅ Команды работают ВО ВРЕМЯ сканирования")
+        logger.info("📊 <b>НОВЫЕ УЛУЧШЕНИЯ:</b>")
+        logger.info("   ✅ Реальный Trade Count (WebSocket)")
+        logger.info("   ✅ Асинхронное сканирование (asyncio.gather)")
+        logger.info("   ✅ Динамические пороги (на основе ATR)")
+        logger.info("   ✅ Команда /pause (поставить на паузу)")
+        logger.info("   ✅ Команда /result (результаты сканирования)")
+        logger.info("   ✅ Кнопки обратной связи по сигналам")
+        logger.info("   ✅ Статистика отработок /stats")
+        logger.info("   ✅ Админ-панель с кнопками")
+        logger.info("   ✅ Автоблокировка новых пользователей")
+        logger.info("   ✅ Администратор добавляется автоматически")
+        logger.info("   ✅ Подписчики сохраняются между перезапусками")
         logger.info("="*50)
         logger.info("🤖 Бот запущен!")
-        logger.info("📱 Команды в Telegram: /start, /stop, /pause, /resume, /result, /stats, /status, /help")
+        logger.info("📱 Команды в Telegram:")
+        logger.info("   /start   - Запустить сканирование")
+        logger.info("   /stop    - Остановить сканирование")
+        logger.info("   /pause   - Поставить на паузу")
+        logger.info("   /resume  - Возобновить работу")
+        logger.info("   /result  - Результаты последнего сканирования")
+        logger.info("   /stats   - Статистика сигналов")
+        logger.info("   /support - Контакты поддержки")
+        logger.info("   /status  - Статус бота")
+        logger.info("   /help    - Помощь")
+        logger.info("   /admin   - Админ-панель")
         logger.info("="*50)
         
-        # Запускаем Telegram бота
         await notifier.run_bot()
         
-        # Основной цикл
         logger.info("⏳ Ожидание команд из Telegram...")
         while True:
             try:
@@ -82,7 +102,6 @@ async def main():
                 if not notifier.is_paused and detector:
                     logger.info("🔍 Начинаем асинхронное сканирование...")
                     
-                    # Символы уже загружены, сканируем без задержки
                     if hasattr(detector, 'scan_all_symbols_async'):
                         signals = await detector.scan_all_symbols_async()
                     else:
