@@ -542,7 +542,6 @@ class TelegramNotifier:
         """Команда /stop - останавливает сканирование"""
         chat_id = update.message.chat_id
         
-        # Проверяем, разблокирован ли пользователь
         if subscribers_manager.is_blocked(chat_id):
             await update.message.reply_text("⛔ Доступ запрещён.")
             return
@@ -969,7 +968,7 @@ class TelegramNotifier:
 """
     
     async def handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка нажатия на кнопки обратной связи"""
+        """Обработка нажатия на кнопки обратной связи с повторными попытками"""
         query = update.callback_query
         chat_id = query.message.chat_id
         
@@ -985,7 +984,21 @@ class TelegramNotifier:
             return
         
         self.pending_callbacks[query.message.message_id] = True
-        await query.answer()
+        
+        # ============================================================
+        # ПОВТОРНЫЕ ПОПЫТКИ ДЛЯ answer() (исправление TimedOut)
+        # ============================================================
+        try:
+            await query.answer()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при answer: {e}, повторяем...")
+            await asyncio.sleep(1)
+            try:
+                await query.answer()
+            except Exception as e2:
+                logger.error(f"❌ Вторая попытка answer также не удалась: {e2}")
+                # Даже если не удалось ответить — продолжаем обработку
+        # ============================================================
         
         try:
             data = query.data
@@ -1039,6 +1052,8 @@ class TelegramNotifier:
             else:
                 await query.edit_message_text(f"⚠️ {msg}")
                 
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки feedback: {e}")
         finally:
             if query.message.message_id in self.pending_callbacks:
                 del self.pending_callbacks[query.message.message_id]
