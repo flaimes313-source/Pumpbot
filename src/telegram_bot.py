@@ -31,7 +31,7 @@ class TelegramNotifier:
     def _add_user(self, update: Update):
         """
         Добавляет пользователя в подписчики с сохранением в файл.
-        Новые пользователи добавляются с is_blocked = True (автоблокировка).
+        НЕ БЛОКИРУЕТ администратора и существующих пользователей.
         """
         chat_id = update.effective_chat.id
         user = update.effective_user
@@ -40,14 +40,31 @@ class TelegramNotifier:
         first_name = user.first_name if user.first_name else None
         last_name = user.last_name if user.last_name else None
         
+        # Проверяем, есть ли пользователь уже в списке
         if subscribers_manager.is_subscribed(chat_id):
+            # Если есть — просто обновляем информацию, НЕ БЛОКИРУЕМ
             subscribers_manager.add_subscriber(chat_id, username, first_name, last_name)
             logger.info(f"🔄 Обновлена подписка: @{username or chat_id}")
+            
+            # Если это администратор — разблокируем
+            if str(chat_id) == str(self.chat_id):
+                subscribers_manager.unblock_subscriber(chat_id)
+                logger.info(f"🔓 Администратор {chat_id} разблокирован")
+            
             return False
         
+        # Новый пользователь
         subscribers_manager.add_subscriber(chat_id, username, first_name, last_name)
-        subscribers_manager.block_subscriber(chat_id)
-        logger.info(f"🚫 Новый пользователь @{username or chat_id} добавлен с автоблокировкой")
+        
+        # Блокируем ТОЛЬКО если это НЕ администратор
+        if str(chat_id) != str(self.chat_id):
+            subscribers_manager.block_subscriber(chat_id)
+            logger.info(f"🚫 Новый пользователь @{username or chat_id} добавлен с автоблокировкой")
+        else:
+            # Администратор сразу разблокирован
+            subscribers_manager.unblock_subscriber(chat_id)
+            logger.info(f"✅ Администратор @{username or chat_id} добавлен и разблокирован")
+        
         return True
     
     # ============================================================

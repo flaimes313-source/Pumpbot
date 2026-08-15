@@ -7,10 +7,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from src.detector import PumpDetector
 from src.telegram_bot import TelegramNotifier
-from src.utils import setup_logging, subscribers_manager
+from src.utils import setup_logging, SubscribersManager
 from src.trade_stream import trade_stream
 
 logger = setup_logging()
+
+# ============================================================
+# ИНИЦИАЛИЗАЦИЯ subscribers_manager
+# ============================================================
+subscribers_manager = SubscribersManager(admin_chat_id=config.TELEGRAM_CHAT_ID)
+
+# ============================================================
+# ПРОВЕРКА: АДМИНИСТРАТОР ДОЛЖЕН БЫТЬ РАЗБЛОКИРОВАН
+# ============================================================
+admin_id = config.TELEGRAM_CHAT_ID
+if admin_id:
+    if not subscribers_manager.is_subscribed(admin_id):
+        logger.info(f"👤 Добавляю администратора {admin_id}...")
+        subscribers_manager.add_subscriber(admin_id, 'admin', 'Administrator')
+    
+    # Разблокируем администратора
+    subscribers_manager.unblock_subscriber(admin_id)
+    logger.info(f"✅ Администратор {admin_id} разблокирован")
+# ============================================================
 
 async def main():
     """Запуск бота"""
@@ -18,8 +37,10 @@ async def main():
         config.validate()
         logger.info("✅ Настройки проверены успешно")
         
+        # Создаём детектор и нотификатор
         detector = PumpDetector()
         notifier = TelegramNotifier()
+        
         notifier.set_detector(detector)
         
         # Загружаем символы для WebSocket
@@ -64,8 +85,9 @@ async def main():
         logger.info("   ✅ Статистика отработок /stats")
         logger.info("   ✅ Админ-панель с кнопками")
         logger.info("   ✅ Автоблокировка новых пользователей")
-        logger.info("   ✅ Администратор добавляется автоматиicamente")
+        logger.info("   ✅ Администратор добавляется автоматически")
         logger.info("   ✅ Подписчики сохраняются между перезапусками")
+        logger.info("   ✅ Существующие пользователи не теряют доступ")
         logger.info("="*50)
         logger.info("🤖 Бот запущен!")
         logger.info("📱 Команды в Telegram:")

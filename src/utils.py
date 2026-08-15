@@ -269,6 +269,7 @@ class SubscribersManager:
         logger.info(f"📊 SubscribersManager инициализирован, загружено {len(self.subscribers)} подписчиков")
     
     def _ensure_admin_exists(self):
+        """Автоматически добавляет и разблокирует администратора"""
         if self.admin_chat_id is None:
             return
         
@@ -283,31 +284,47 @@ class SubscribersManager:
                 'last_name': '',
                 'subscribed_at': datetime.now().isoformat(),
                 'last_active': datetime.now().isoformat(),
-                'is_blocked': False
+                'is_blocked': False  # Админ сразу разблокирован
             }
             self._save()
             logger.info(f"✅ Администратор {self.admin_chat_id} добавлен и разблокирован")
         else:
+            # Если админ есть, но заблокирован — разблокируем
             if self.subscribers[admin_id_str].get('is_blocked', False):
                 self.subscribers[admin_id_str]['is_blocked'] = False
                 self._save()
                 logger.info(f"🔓 Администратор {self.admin_chat_id} разблокирован")
+            else:
+                logger.info(f"✅ Администратор {self.admin_chat_id} уже в списке и разблокирован")
     
     def _load(self):
+        """Загружает подписчиков из файла с диагностикой"""
         if self.subscribers_file.exists():
             try:
                 with open(self.subscribers_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.subscribers = data.get('users', {})
-                    logger.info(f"✅ Загружено {len(self.subscribers)} подписчиков из файла")
+                    
+                    # ДИАГНОСТИКА
+                    logger.info(f"📊 Загружено {len(self.subscribers)} подписчиков из файла")
+                    
+                    # Выводим список для проверки
+                    for chat_id, info in self.subscribers.items():
+                        status = "🔓" if not info.get('is_blocked', True) else "🔒"
+                        username = info.get('username', 'unknown')
+                        logger.info(f"   {status} {chat_id} - @{username}")
+                    
                     return
             except Exception as e:
-                logger.error(f"Ошибка загрузки подписчиков: {e}")
+                logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
+                logger.info("🔄 Создаю новый файл...")
         
         self.subscribers = {}
         self._save()
+        logger.info("📁 Создан новый файл подписчиков")
     
     def _save(self):
+        """Сохраняет подписчиков в файл"""
         try:
             data = {
                 'users': self.subscribers,
@@ -318,13 +335,15 @@ class SubscribersManager:
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
             return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения подписчиков: {e}")
+            logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
             return False
     
     def add_subscriber(self, chat_id, username=None, first_name=None, last_name=None):
+        """Добавляет подписчика (НЕ блокирует существующих)"""
         chat_id_str = str(chat_id)
         
         if chat_id_str in self.subscribers:
+            # Обновляем информацию, НЕ меняем статус блокировки
             self.subscribers[chat_id_str]['last_active'] = datetime.now().isoformat()
             if username:
                 self.subscribers[chat_id_str]['username'] = username
@@ -333,6 +352,7 @@ class SubscribersManager:
             self._save()
             return False
         
+        # Новый пользователь — по умолчанию заблокирован
         self.subscribers[chat_id_str] = {
             'chat_id': chat_id,
             'username': username or 'unknown',
@@ -343,19 +363,21 @@ class SubscribersManager:
             'is_blocked': True
         }
         self._save()
-        logger.info(f"✅ Новый подписчик: {username or chat_id}")
+        logger.info(f"✅ Новый подписчик: {username or chat_id} (заблокирован)")
         return True
     
     def remove_subscriber(self, chat_id):
+        """Удаляет подписчика полностью"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             del self.subscribers[chat_id_str]
             self._save()
-            logger.info(f"❌ Подписчик {chat_id} удалён")
+            logger.info(f"❌ Подписчик {chat_id} полностью удалён")
             return True
         return False
     
     def block_subscriber(self, chat_id):
+        """Блокирует подписчика (is_blocked = True)"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             self.subscribers[chat_id_str]['is_blocked'] = True
@@ -365,6 +387,7 @@ class SubscribersManager:
         return False
     
     def unblock_subscriber(self, chat_id):
+        """Разблокирует подписчика (is_blocked = False)"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             self.subscribers[chat_id_str]['is_blocked'] = False
@@ -374,30 +397,37 @@ class SubscribersManager:
         return False
     
     def get_subscribers(self):
+        """Возвращает всех подписчиков"""
         return self.subscribers
     
     def get_subscribers_count(self):
+        """Возвращает количество подписчиков"""
         return len(self.subscribers)
     
     def is_subscribed(self, chat_id):
+        """Проверяет, есть ли пользователь в списке"""
         return str(chat_id) in self.subscribers
     
     def is_blocked(self, chat_id):
+        """Проверяет, заблокирован ли пользователь"""
         chat_id_str = str(chat_id)
         if chat_id_str in self.subscribers:
             return self.subscribers[chat_id_str].get('is_blocked', True)
-        return True
+        return True  # Если пользователя нет — считаем заблокированным
     
     def get_subscribers_list(self):
+        """Возвращает список chat_id только НЕ ЗАБЛОКИРОВАННЫХ подписчиков"""
         return [
             int(chat_id) for chat_id, data in self.subscribers.items()
             if not data.get('is_blocked', False)
         ]
     
     def get_all_subscribers_list(self):
+        """Возвращает список chat_id ВСЕХ подписчиков (включая заблокированных)"""
         return [int(chat_id) for chat_id in self.subscribers.keys()]
     
     def clear_all(self):
+        """Очищает список подписчиков"""
         self.subscribers = {}
         self._save()
         logger.info("🗑️ Все подписчики удалены")
@@ -408,11 +438,7 @@ class SubscribersManager:
 # ============================================================
 signals_history = SignalsHistory()
 
-# ============================================================
-# ВАЖНО: Инициализация subscribers_manager ДО импорта в telegram_bot
-# ============================================================
-# Здесь мы создаём экземпляр с admin_chat_id из config
-# Чтобы не было циклического импорта, импортируем config локально
+# Инициализация subscribers_manager с admin_chat_id из config
 from config import config as _config
 subscribers_manager = SubscribersManager(admin_chat_id=_config.TELEGRAM_CHAT_ID)
 # ============================================================
